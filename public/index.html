@@ -1,0 +1,335 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>GDList</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    --bg: #f5f5f5;
+    --surface: #ffffff;
+    --border: #e0e0e0;
+    --text: #212121;
+    --text-muted: #757575;
+    --accent: #1a73e8;
+    --accent-hover: #1557b0;
+    --danger: #d32f2f;
+    --row-hover: #f8f9fa;
+    --font: system-ui, -apple-system, 'Segoe UI', sans-serif;
+  }
+
+  body { background: var(--bg); color: var(--text); font-family: var(--font); font-size: 14px; }
+
+  /* ── Login ── */
+  #login-page {
+    display: flex; align-items: center; justify-content: center;
+    min-height: 100vh;
+  }
+  .login-card {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 8px; padding: 40px 36px; width: 320px;
+  }
+  .login-card h1 { font-size: 20px; margin-bottom: 24px; text-align: center; }
+  .login-card label { display: block; font-size: 12px; color: var(--text-muted); margin-bottom: 4px; }
+  .login-card input {
+    width: 100%; border: 1px solid var(--border); border-radius: 4px;
+    padding: 8px 10px; font-size: 14px; margin-bottom: 16px;
+    outline: none; transition: border-color .15s;
+  }
+  .login-card input:focus { border-color: var(--accent); }
+  .btn {
+    display: inline-block; padding: 8px 18px; border-radius: 4px; border: none;
+    cursor: pointer; font-size: 14px; font-family: var(--font); transition: background .15s;
+  }
+  .btn-primary { background: var(--accent); color: #fff; width: 100%; }
+  .btn-primary:hover { background: var(--accent-hover); }
+  .btn-sm { padding: 4px 12px; font-size: 12px; }
+  .btn-outline { background: transparent; border: 1px solid var(--border); color: var(--text); }
+  .btn-outline:hover { background: var(--row-hover); }
+  .error-msg { color: var(--danger); font-size: 12px; margin-top: 8px; min-height: 16px; }
+
+  /* ── App ── */
+  #app-page { display: none; }
+
+  header {
+    background: var(--surface); border-bottom: 1px solid var(--border);
+    padding: 0 24px; height: 52px;
+    display: flex; align-items: center; justify-content: space-between;
+  }
+  header .logo { font-weight: 600; font-size: 16px; color: var(--text); }
+  header .actions { display: flex; align-items: center; gap: 12px; }
+  header .user-info { color: var(--text-muted); font-size: 13px; }
+
+  .container { max-width: 1100px; margin: 0 auto; padding: 24px 16px; }
+
+  /* breadcrumb */
+  .breadcrumb { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; margin-bottom: 16px; font-size: 13px; }
+  .breadcrumb span { color: var(--text-muted); }
+  .breadcrumb a { color: var(--accent); text-decoration: none; cursor: pointer; }
+  .breadcrumb a:hover { text-decoration: underline; }
+
+  /* file table */
+  .file-table { width: 100%; border-collapse: collapse; background: var(--surface); border: 1px solid var(--border); border-radius: 6px; overflow: hidden; }
+  .file-table th {
+    text-align: left; padding: 10px 14px; font-size: 12px; font-weight: 600;
+    color: var(--text-muted); border-bottom: 1px solid var(--border); background: #fafafa;
+  }
+  .file-table td { padding: 9px 14px; border-bottom: 1px solid var(--border); }
+  .file-table tr:last-child td { border-bottom: none; }
+  .file-table tbody tr:hover { background: var(--row-hover); }
+
+  .file-icon { margin-right: 8px; font-size: 15px; }
+  .file-name { display: flex; align-items: center; }
+  .file-name a { color: var(--accent); text-decoration: none; cursor: pointer; }
+  .file-name a:hover { text-decoration: underline; }
+  .file-name span { color: var(--text); }
+
+  .col-name { width: 55%; }
+  .col-size { width: 12%; color: var(--text-muted); }
+  .col-modified { width: 20%; color: var(--text-muted); }
+  .col-action { width: 13%; text-align: right; }
+
+  .loading { text-align: center; padding: 40px; color: var(--text-muted); }
+  .empty { text-align: center; padding: 40px; color: var(--text-muted); }
+
+  /* modal */
+  .modal-backdrop {
+    display: none; position: fixed; inset: 0;
+    background: rgba(0,0,0,.4); z-index: 100;
+    align-items: center; justify-content: center;
+  }
+  .modal-backdrop.open { display: flex; }
+  .modal {
+    background: var(--surface); border-radius: 8px; padding: 28px 28px 20px;
+    width: 480px; max-width: 96vw;
+  }
+  .modal h3 { margin-bottom: 16px; font-size: 15px; }
+  .modal .share-url {
+    width: 100%; border: 1px solid var(--border); border-radius: 4px;
+    padding: 8px 10px; font-size: 13px; background: var(--bg);
+    word-break: break-all; outline: none;
+  }
+  .modal .modal-footer { margin-top: 16px; display: flex; justify-content: flex-end; gap: 8px; }
+  .copy-hint { font-size: 12px; color: green; margin-top: 6px; min-height: 16px; }
+</style>
+</head>
+<body>
+
+<!-- ── Login Page ── -->
+<div id="login-page">
+  <div class="login-card">
+    <h1>GDList</h1>
+    <label for="username">用户名</label>
+    <input type="text" id="username" autocomplete="username" placeholder="admin">
+    <label for="password">密码</label>
+    <input type="password" id="password" autocomplete="current-password" placeholder="••••••••">
+    <button class="btn btn-primary" onclick="doLogin()">登录</button>
+    <div class="error-msg" id="login-error"></div>
+  </div>
+</div>
+
+<!-- ── App Page ── -->
+<div id="app-page">
+  <header>
+    <div class="logo">📁 GDList</div>
+    <div class="actions">
+      <span class="user-info" id="header-user"></span>
+      <button class="btn btn-outline btn-sm" onclick="doLogout()">退出</button>
+    </div>
+  </header>
+
+  <div class="container">
+    <div class="breadcrumb" id="breadcrumb"></div>
+
+    <table class="file-table" id="file-table">
+      <thead>
+        <tr>
+          <th class="col-name">名称</th>
+          <th class="col-size">大小</th>
+          <th class="col-modified">修改时间</th>
+          <th class="col-action">操作</th>
+        </tr>
+      </thead>
+      <tbody id="file-list">
+        <tr><td colspan="4" class="loading">加载中…</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<!-- ── Share Modal ── -->
+<div class="modal-backdrop" id="share-modal">
+  <div class="modal">
+    <h3>分享链接（无需登录可下载）</h3>
+    <textarea class="share-url" id="share-url" rows="3" readonly></textarea>
+    <div class="copy-hint" id="copy-hint"></div>
+    <div class="modal-footer">
+      <button class="btn btn-outline btn-sm" onclick="copyLink()">复制</button>
+      <button class="btn btn-outline btn-sm" onclick="closeModal()">关闭</button>
+    </div>
+  </div>
+</div>
+
+<script>
+const FOLDER_MIME = 'application/vnd.google-apps.folder';
+let currentFolder = 'root';
+
+// ── Utility ───────────────────────────────────────────────────────────────
+function fmtSize(bytes) {
+  if (!bytes) return '—';
+  const b = parseInt(bytes);
+  if (b < 1024) return b + ' B';
+  if (b < 1024 * 1024) return (b / 1024).toFixed(1) + ' KB';
+  if (b < 1024 * 1024 * 1024) return (b / 1024 / 1024).toFixed(1) + ' MB';
+  return (b / 1024 / 1024 / 1024).toFixed(2) + ' GB';
+}
+function fmtDate(iso) {
+  if (!iso) return '—';
+  return new Date(iso).toLocaleString('zh-CN', { hour12: false }).replace(/\//g, '-');
+}
+function fileIcon(mimeType) {
+  if (mimeType === FOLDER_MIME) return '📁';
+  if (mimeType.startsWith('image/')) return '🖼️';
+  if (mimeType.startsWith('video/')) return '🎬';
+  if (mimeType.startsWith('audio/')) return '🎵';
+  if (mimeType.includes('pdf')) return '📄';
+  if (mimeType.includes('zip') || mimeType.includes('tar') || mimeType.includes('rar')) return '🗜️';
+  if (mimeType.includes('spreadsheet') || mimeType.includes('excel')) return '📊';
+  if (mimeType.includes('document') || mimeType.includes('word')) return '📝';
+  return '📎';
+}
+
+// ── Auth ──────────────────────────────────────────────────────────────────
+async function checkAuth() {
+  const r = await fetch('/api/auth');
+  const d = await r.json();
+  if (d.authenticated) showApp();
+}
+
+async function doLogin() {
+  const username = document.getElementById('username').value.trim();
+  const password = document.getElementById('password').value;
+  document.getElementById('login-error').textContent = '';
+  const r = await fetch('/api/login', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ username, password })
+  });
+  if (r.ok) {
+    document.getElementById('header-user').textContent = username;
+    showApp();
+  } else {
+    const d = await r.json();
+    document.getElementById('login-error').textContent = d.error || '登录失败';
+  }
+}
+
+async function doLogout() {
+  await fetch('/api/logout', { method: 'POST' });
+  document.getElementById('app-page').style.display = 'none';
+  document.getElementById('login-page').style.display = 'flex';
+  document.getElementById('password').value = '';
+}
+
+function showApp() {
+  document.getElementById('login-page').style.display = 'none';
+  document.getElementById('app-page').style.display = 'block';
+  loadFiles('root');
+}
+
+// ── File listing ──────────────────────────────────────────────────────────
+async function loadFiles(folderId) {
+  currentFolder = folderId;
+  const tbody = document.getElementById('file-list');
+  tbody.innerHTML = '<tr><td colspan="4" class="loading">加载中…</td></tr>';
+
+  // breadcrumb
+  loadBreadcrumb(folderId);
+
+  const r = await fetch('/api/files?folderId=' + encodeURIComponent(folderId));
+  if (!r.ok) {
+    tbody.innerHTML = `<tr><td colspan="4" class="empty">加载失败: ${(await r.json()).error}</td></tr>`;
+    return;
+  }
+  const { files } = await r.json();
+  if (!files.length) {
+    tbody.innerHTML = '<tr><td colspan="4" class="empty">此文件夹为空</td></tr>';
+    return;
+  }
+
+  tbody.innerHTML = files.map(f => {
+    const isFolder = f.mimeType === FOLDER_MIME;
+    const nameCell = isFolder
+      ? `<a onclick="loadFiles('${f.id}')">${f.name}</a>`
+      : `<span>${f.name}</span>`;
+    const actionCell = isFolder
+      ? ''
+      : `<button class="btn btn-outline btn-sm" onclick="getShareLink('${f.id}')">分享</button>`;
+    return `<tr>
+      <td class="col-name">
+        <div class="file-name">
+          <span class="file-icon">${fileIcon(f.mimeType)}</span>${nameCell}
+        </div>
+      </td>
+      <td class="col-size">${fmtSize(f.size)}</td>
+      <td class="col-modified">${fmtDate(f.modifiedTime)}</td>
+      <td class="col-action">${actionCell}</td>
+    </tr>`;
+  }).join('');
+}
+
+async function loadBreadcrumb(folderId) {
+  const bc = document.getElementById('breadcrumb');
+  bc.innerHTML = '';
+  const r = await fetch('/api/path?folderId=' + encodeURIComponent(folderId));
+  if (!r.ok) return;
+  const { path } = await r.json();
+  path.forEach((seg, i) => {
+    if (i > 0) bc.insertAdjacentHTML('beforeend', '<span>/</span>');
+    if (i === path.length - 1) {
+      bc.insertAdjacentHTML('beforeend', `<span>${seg.name}</span>`);
+    } else {
+      bc.insertAdjacentHTML('beforeend', `<a onclick="loadFiles('${seg.id}')">${seg.name}</a>`);
+    }
+  });
+}
+
+// ── Share ─────────────────────────────────────────────────────────────────
+async function getShareLink(fileId) {
+  const r = await fetch('/api/share/' + fileId);
+  const d = await r.json();
+  document.getElementById('share-url').value = d.url;
+  document.getElementById('copy-hint').textContent = '';
+  document.getElementById('share-modal').classList.add('open');
+}
+
+function copyLink() {
+  const el = document.getElementById('share-url');
+  navigator.clipboard.writeText(el.value).then(() => {
+    document.getElementById('copy-hint').textContent = '已复制到剪贴板';
+  });
+}
+
+function closeModal() {
+  document.getElementById('share-modal').classList.remove('open');
+}
+
+// close modal on backdrop click
+document.getElementById('share-modal').addEventListener('click', function(e) {
+  if (e.target === this) closeModal();
+});
+
+// enter key on login
+document.addEventListener('keydown', e => {
+  if (e.key === 'Enter' && document.getElementById('login-page').style.display !== 'none') {
+    doLogin();
+  }
+});
+
+// ── Init ──────────────────────────────────────────────────────────────────
+checkAuth();
+</script>
+</body>
+</html>
