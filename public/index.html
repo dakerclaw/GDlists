@@ -391,25 +391,7 @@ async function doPreview(fileId, mimeType) {
     } else if (mimeType.startsWith('audio/')) {
       area.innerHTML = `<audio src="${url}" controls style="display:block;margin:40px auto">您的浏览器不支持音频播放</audio>`;
     }
-    // PDF — inline iframe
-    else if (mimeType === 'application/pdf') {
-      area.innerHTML = `<iframe src="${url}" title="PDF preview"></iframe>`;
-    }
-    // Google Workspace files — Google Docs Viewer
-    else if (
-      mimeType.startsWith('application/vnd.google-apps') ||
-      mimeType.includes('openxmlformats') ||
-      mimeType.includes('officedocument') ||
-      mimeType.includes('msword') ||
-      mimeType.includes('excel') ||
-      mimeType.includes('powerpoint') ||
-      mimeType.includes('spreadsheet') ||
-      mimeType.includes('presentation')
-    ) {
-      const encoded = encodeURIComponent(url);
-      area.innerHTML = `<iframe src="https://docs.google.com/viewer?url=${encoded}&embedded=true" title="Document preview"></iframe>`;
-    }
-    // Plain text / JSON — fetch and display
+    // Plain text / JSON — fetch and display inline
     else if (mimeType.startsWith('text/') || mimeType === 'application/json') {
       const tr = await fetch(url);
       if (!tr.ok) throw new Error('无法加载文件内容');
@@ -425,9 +407,9 @@ async function doPreview(fileId, mimeType) {
         area.innerHTML = `<pre class="language-${lang}">${escapeHtml(text)}</pre>`;
       }
     }
-    // Unsupported
+    // PDF, Google Workspace, Office — backend exports to PDF → iframe
     else {
-      area.innerHTML = `<div class="no-preview">此文件类型暂不支持预览，请使用分享链接下载</div>`;
+      area.innerHTML = `<iframe src="${url}" title="Document preview"></iframe>`;
     }
   } catch(e) {
     area.innerHTML = `<div class="no-preview">预览失败：${e.message}</div>`;

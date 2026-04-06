@@ -210,8 +210,22 @@ app.get('/pv/:token', async (req, res) => {
     });
 
     const { name, mimeType } = meta.data;
-    // inline display for browser-renderable types
-    const disposition = mimeType.startsWith('text/')
+
+    // Google Workspace & Office files → export as PDF (inline preview)
+    const PDF_EXPORT_TYPES = {
+      'application/vnd.google-apps.document': 'application/pdf',
+      'application/vnd.google-apps.spreadsheet': 'application/pdf',
+      'application/vnd.google-apps.presentation': 'application/pdf',
+      'application/vnd.openxmlformats-officedocument.wordprocessingml.document': 'application/pdf',
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': 'application/pdf',
+      'application/vnd.openxmlformats-officedocument.presentationml.presentation': 'application/pdf',
+    };
+    const exportMime = PDF_EXPORT_TYPES[mimeType];
+    const previewMime = exportMime || mimeType;
+    const previewName = exportMime ? name.replace(/\.[^.]+$/, '') + '.pdf' : name;
+
+    const disposition = exportMime
+      || mimeType.startsWith('text/')
       || mimeType === 'application/json'
       || mimeType.startsWith('image/')
       || mimeType === 'application/pdf'
@@ -220,13 +234,22 @@ app.get('/pv/:token', async (req, res) => {
       ? 'inline'
       : 'attachment';
 
-    res.setHeader('Content-Disposition', `${disposition}; filename*=UTF-8''${encodeURIComponent(name)}`);
-    res.setHeader('Content-Type', mimeType || 'application/octet-stream');
+    res.setHeader('Content-Disposition', `${disposition}; filename*=UTF-8''${encodeURIComponent(previewName)}`);
+    res.setHeader('Content-Type', previewMime || 'application/octet-stream');
 
-    const stream = await drive.files.get(
-      { fileId: payload.id, alt: 'media' },
-      { responseType: 'stream' }
-    );
+    let stream;
+    if (exportMime) {
+      // Use Google export API to convert to PDF
+      stream = await drive.files.export(
+        { fileId: payload.id, mimeType: exportMime },
+        { responseType: 'stream' }
+      );
+    } else {
+      stream = await drive.files.get(
+        { fileId: payload.id, alt: 'media' },
+        { responseType: 'stream' }
+      );
+    }
     stream.data.pipe(res);
   } catch (err) {
     console.error('[Drive] 预览错误:', err.message);
