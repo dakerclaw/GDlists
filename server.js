@@ -5,8 +5,12 @@ const express = require('express');
 const session = require('express-session');
 const cookieParser = require('cookie-parser');
 const bcrypt = require('bcryptjs');
+const multer = require('multer');
 const path = require('path');
 const { google } = require('googleapis');
+
+// Multer: keep files in memory, pass directly to Drive API
+const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 * 1024 * 1024 * 1024 } }); // 10 GB limit
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -63,7 +67,7 @@ function getDriveClient() {
     credentials.client_email,
     null,
     credentials.private_key,
-    ['https://www.googleapis.com/auth/drive.readonly']
+    ['https://www.googleapis.com/auth/drive']
   );
 
   _drive = google.drive({ version: 'v3', auth });
@@ -294,6 +298,43 @@ app.get('/dl/:token', async (req, res) => {
   } catch (err) {
     console.error('[Drive] 下载错误:', err.message);
     res.status(500).send('Download failed: ' + err.message);
+  }
+});
+
+// ── Upload a file to the current folder ────────────────────────────────────
+app.post('/api/upload', requireLogin, upload.single('file'), async (req, res) => {
+  if (!req.file) return res.status(400).json({ error: '没有上传文件' });
+
+  const folderId = req.body.folderId || ROOT_FOLDER_ID;
+  const fileName  = req.body.name || req.file.originalname;
+
+  try {
+    const drive = getDriveClient();
+    const { buffer, mimetype } = req.file;
+
+    const result = await drive.files.create({
+      resource: { name: fileName, parents: [folderId] },
+      media: { body: require('stream').Readable.from(buffer), mimeType: mimetype },
+      fields: 'id,name,mimeType,size,modifiedTime'
+    });
+
+    res.json({ ok: true, file: result.data });
+  } catch (err) {
+    console.error('[Drive] 上传错误:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ── Delete a file ───────────────────────────────────────────────────────────
+app.delete('/api/files/:fileId', requireLogin, async (req, res) => {
+  const { fileId } = req.params;
+  try {
+    const drive = getDriveClient();
+    await drive.files.delete({ fileId });
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('[Drive] 删除错误:', err.message);
+    res.status(500).json({ error: err.message });
   }
 });
 

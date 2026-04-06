@@ -49,8 +49,13 @@
   .btn-primary { background: var(--accent); color: #fff; width: 100%; }
   .btn-primary:hover { background: var(--accent-hover); }
   .btn-sm { padding: 4px 12px; font-size: 12px; }
+  .header-actions { display: flex; align-items: center; gap: 8px; }
+  header .btn-primary { background: var(--accent); color: #fff; width: auto; }
+  header .btn-primary:hover { background: var(--accent-hover); }
   .btn-outline { background: transparent; border: 1px solid var(--border); color: var(--text); }
   .btn-outline:hover { background: var(--row-hover); }
+  .btn-danger { background: transparent; border: 1px solid var(--danger); color: var(--danger); }
+  .btn-danger:hover { background: #fee; }
   .error-msg { color: var(--danger); font-size: 12px; margin-top: 8px; min-height: 16px; }
 
   /* ── App ── */
@@ -163,7 +168,9 @@
 <div id="app-page">
   <header>
     <div class="logo">📁 GDList</div>
-    <div class="actions">
+    <div class="actions header-actions">
+      <input type="file" id="upload-input" style="display:none" onchange="doUpload(this.files[0])">
+      <button class="btn btn-primary btn-sm" onclick="document.getElementById('upload-input').click()">⬆ 上传</button>
       <span class="user-info" id="header-user"></span>
       <button class="btn btn-outline btn-sm" onclick="doLogout()">退出</button>
     </div>
@@ -296,6 +303,7 @@ async function loadFiles(folderId) {
     const actionCell = isFolder
       ? ''
       : `<button class="btn btn-outline btn-sm" onclick="doPreview('${f.id}', '${f.mimeType}')">预览</button>
+         <button class="btn btn-danger btn-sm" onclick="doDelete('${f.id}', '${f.name.replace(/'/g, "\\'")}')">删除</button>
          <button class="btn btn-outline btn-sm" onclick="getShareLink('${f.id}')">分享</button>`;
     return `<tr>
       <td class="col-name">
@@ -324,6 +332,74 @@ async function loadBreadcrumb(folderId) {
       bc.insertAdjacentHTML('beforeend', `<a onclick="loadFiles('${seg.id}')">${seg.name}</a>`);
     }
   });
+}
+
+// ── Upload ────────────────────────────────────────────────────────────────
+async function doUpload(file) {
+  if (!file) return;
+  const formData = new FormData();
+  formData.append('file', file);
+  formData.append('folderId', currentFolder || '');
+
+  showUploadProgress('上传中… 0%');
+  try {
+    const xhr = new XMLHttpRequest();
+    xhr.upload.addEventListener('progress', e => {
+      if (e.lengthComputable) {
+        const pct = Math.round(e.loaded / e.total * 100);
+        showUploadProgress(`上传中… ${pct}%`);
+      }
+    });
+    xhr.addEventListener('load', () => {
+      hideUploadProgress();
+      if (xhr.status >= 200 && xhr.status < 300) {
+        showShareToast('上传成功 ✅');
+        loadFiles(currentFolder);
+      } else {
+        try { showShareToast(JSON.parse(xhr.responseText).error || '上传失败'); }
+        catch { showShareToast('上传失败'); }
+      }
+    });
+    xhr.addEventListener('error', () => { hideUploadProgress(); showShareToast('上传失败'); });
+    xhr.open('POST', '/api/upload');
+    xhr.send(formData);
+  } catch(e) {
+    hideUploadProgress();
+    showShareToast('上传失败');
+  }
+}
+
+function showUploadProgress(msg) {
+  let el = document.getElementById('upload-progress');
+  if (!el) {
+    el = document.createElement('div');
+    el.id = 'upload-progress';
+    el.style.cssText = 'position:fixed;bottom:60px;left:50%;transform:translateX(-50%);background:#1a73e8;color:#fff;padding:8px 20px;border-radius:20px;font-size:13px;z-index:9999;';
+    document.body.appendChild(el);
+  }
+  el.textContent = msg;
+}
+
+function hideUploadProgress() {
+  const el = document.getElementById('upload-progress');
+  if (el) el.remove();
+}
+
+// ── Delete ────────────────────────────────────────────────────────────────
+async function doDelete(fileId, fileName) {
+  if (!confirm(`确认删除「${fileName}」？此操作不可恢复。`)) return;
+  try {
+    const r = await fetch('/api/files/' + fileId, { method: 'DELETE' });
+    if (!r.ok) {
+      const d = await r.json();
+      showShareToast(d.error || '删除失败');
+      return;
+    }
+    showShareToast('已删除 ✅');
+    loadFiles(currentFolder);
+  } catch(e) {
+    showShareToast('删除失败');
+  }
 }
 
 // ── Share ─────────────────────────────────────────────────────────────────
