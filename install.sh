@@ -93,36 +93,51 @@ echo "  Service Account 是 Google 官方服务端认证方式："
 echo "  - 无需浏览器，全程在服务器完成"
 echo "  - 凭据永久有效，不会过期"
 echo ""
-echo "  ── 创建步骤 ─────────────────────────────────────"
+echo "  ── 准备步骤 ─────────────────────────────────────"
 echo "  1. 打开 https://console.cloud.google.com/"
-echo "  2. 创建/选择项目 → IAM → Service Accounts"
+echo "  2. 创建/选择项目 → IAM 和管理 → Service Accounts"
 echo "  3. 创建 Service Account，下载 JSON 密钥文件"
-echo "  4. 将 JSON 文件上传到服务器（如 /opt/gdlist/key.json）"
+echo "  4. 用任意方式打开下载的 JSON 文件，复制全部内容"
 echo "  5. 把想访问的 Drive 文件夹共享给 Service Account 邮箱"
 echo ""
+echo "  即将打开编辑器，请将 JSON 内容粘贴进去并保存："
+echo "  - nano: Ctrl+Shift+V 粘贴 → Ctrl+X → Y → Enter 保存"
+echo ""
+prompt "准备好后按回车打开编辑器…"; read -r
 
-prompt "请输入 JSON 密钥文件路径:"; read -r KEY_PATH
-while [ -z "$KEY_PATH" ]; do
-  prompt "路径不能为空，重输:"; read -r KEY_PATH
-done
+KEY_PATH="${INSTALL_DIR}/service-account-key.json"
 
-if [ ! -f "$KEY_PATH" ]; then
-  error "文件不存在：$KEY_PATH"
+# 确保编辑器可用
+if command -v nano &>/dev/null; then
+  EDITOR_CMD="nano"
+elif command -v vi &>/dev/null; then
+  EDITOR_CMD="vi"
+else
+  $PKG install -y nano; EDITOR_CMD="nano"
 fi
 
+# 打开编辑器让用户粘贴 JSON
+touch "$KEY_PATH" && chmod 600 "$KEY_PATH"
+$EDITOR_CMD "$KEY_PATH"
+
+# 验证文件非空
+if [ ! -s "$KEY_PATH" ]; then
+  error "文件为空，请重新运行安装并粘贴 JSON 内容。"
+fi
+
+# 验证 JSON 格式并提取 SA 邮箱
 SA_EMAIL=$(node -e "
   try {
-    const k = require('$KEY_PATH');
-    if (!k.client_email) { console.error('MISSING_EMAIL'); process.exit(1); }
+    const k = JSON.parse(require('fs').readFileSync('$KEY_PATH','utf8'));
+    if (!k.client_email) { console.error('缺少 client_email 字段'); process.exit(1); }
     console.log(k.client_email);
-  } catch(e) { console.error('PARSE_ERROR'); process.exit(1); }
-" 2>/dev/null) || error "JSON 文件无效，无法读取 Service Account 信息"
+  } catch(e) { console.error('JSON 解析失败: ' + e.message); process.exit(1); }
+" 2>&1) || error "JSON 内容无效：${SA_EMAIL}"
 
 echo ""
 info "Service Account 邮箱: $SA_EMAIL"
-echo -e "  ${YELLOW}⚠  请确认已将 Drive 文件夹共享给 $SA_EMAIL${NC}"
-echo -e "  否则 GDList 无法读取任何文件！"
-prompt "确认已完成共享，按回车继续…"; read -r
+echo -e "  ${YELLOW}⚠  请将 Drive 文件夹共享给以上邮箱，否则 GDList 无法读取任何文件！${NC}"
+prompt "确认已共享（或稍后再共享），按回车继续…"; read -r
 
 # ── 5. 写入配置并启动 ─────────────────────────────────────────────────────
 section "步骤 5/5  写入配置并启动"
@@ -136,7 +151,7 @@ PORT=${PORT}
 SESSION_SECRET=${SESSION_SECRET}
 ADMIN_USERNAME=${ADMIN_USERNAME}
 ADMIN_PASSWORD_HASH=${ADMIN_HASH}
-GOOGLE_SERVICE_ACCOUNT_JSON=${KEY_PATH}
+GOOGLE_SERVICE_ACCOUNT_JSON=${INSTALL_DIR}/service-account-key.json
 SHARE_TTL_HOURS=${TTL}
 ENVEOF
 
