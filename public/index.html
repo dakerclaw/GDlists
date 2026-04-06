@@ -4,6 +4,9 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>GDList</title>
+<!-- Office preview libraries (loaded lazily on first use) -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/mammoth/1.11.0/mammoth.browser.min.js"></script>
+<script src="https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js"></script>
 <style>
   *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
@@ -377,22 +380,29 @@ async function doPreview(fileId, mimeType) {
   document.getElementById('preview-modal').classList.add('open');
 
   try {
-    const r = await fetch('/api/preview/' + fileId);
-    if (!r.ok) throw new Error((await r.json()).error);
-    const { url } = await r.json();
+    // Image / video / audio / PDF — use /api/preview (returns iframe URL)
+    if (mimeType.startsWith('image/') || mimeType.startsWith('video/')
+      || mimeType.startsWith('audio/') || mimeType === 'application/pdf') {
+      const r = await fetch('/api/preview/' + fileId);
+      if (!r.ok) throw new Error((await r.json()).error);
+      const { url } = await r.json();
+      if (mimeType.startsWith('image/')) {
+        area.innerHTML = `<img src="${url}" alt="preview" style="max-width:100%;max-height:100%;object-fit:contain;display:block;margin:auto;">`;
+      } else if (mimeType.startsWith('video/')) {
+        area.innerHTML = `<video src="${url}" controls style="display:block;width:100%;height:100%">您的浏览器不支持视频播放</video>`;
+      } else if (mimeType.startsWith('audio/')) {
+        area.innerHTML = `<audio src="${url}" controls style="display:block;margin:40px auto">您的浏览器不支持音频播放</audio>`;
+      } else {
+        area.innerHTML = `<iframe src="${url}" title="PDF preview"></iframe>`;
+      }
+      return;
+    }
 
-    // Image — direct <img>
-    if (mimeType.startsWith('image/')) {
-      area.innerHTML = `<img src="${url}" alt="preview">`;
-    }
-    // Video / audio — native player
-    else if (mimeType.startsWith('video/')) {
-      area.innerHTML = `<video src="${url}" controls style="display:block;width:100%;height:100%">您的浏览器不支持视频播放</video>`;
-    } else if (mimeType.startsWith('audio/')) {
-      area.innerHTML = `<audio src="${url}" controls style="display:block;margin:40px auto">您的浏览器不支持音频播放</audio>`;
-    }
-    // Plain text / JSON — fetch and display inline
-    else if (mimeType.startsWith('text/') || mimeType === 'application/json') {
+    // Plain text / JSON — fetch as text
+    if (mimeType.startsWith('text/') || mimeType === 'application/json') {
+      const r = await fetch('/api/preview/' + fileId);
+      if (!r.ok) throw new Error((await r.json()).error);
+      const { url } = await r.json();
       const tr = await fetch(url);
       if (!tr.ok) throw new Error('无法加载文件内容');
       const size = parseInt(tr.headers.get('content-length') || '0');
@@ -406,11 +416,50 @@ async function doPreview(fileId, mimeType) {
           : mimeType.includes('xml') ? 'xml' : 'plain';
         area.innerHTML = `<pre class="language-${lang}">${escapeHtml(text)}</pre>`;
       }
+      return;
     }
-    // PDF, Google Workspace, Office — backend exports to PDF → iframe
-    else {
-      area.innerHTML = `<iframe src="${url}" title="Document preview"></iframe>`;
+
+    // ── Office files — fetch binary, render client-side ─────────────────────
+    // Word: .docx  and  Google Docs
+    if (mimeType === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+      || mimeType === 'application/vnd.google-apps.document') {
+      const r = await fetch('/api/preview-data/' + fileId);
+      if (!r.ok) throw new Error((await r.json()).error);
+      const ab = await r.arrayBuffer();
+      const result = await mammoth.convertToHtml({ arrayBuffer: ab });
+      area.innerHTML = `<div style="overflow:auto;width:100%;height:100%;padding:20px;font-family:sans-serif;line-height:1.6;">${result.value}</div>`;
+      if (result.messages && result.messages.length) console.warn('mammoth warnings:', result.messages);
+      return;
     }
+
+    // Excel: .xlsx/.xls  and  Google Sheets
+    if (mimeType === 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+      || mimeType === 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+      || mimeType === 'application/vnd.ms-excel'
+      || mimeType === 'application/vnd.google-apps.spreadsheet') {
+      const r = await fetch('/api/preview-data/' + fileId);
+      if (!r.ok) throw new Error((await r.json()).error);
+      const ab = await r.arrayBuffer();
+      const wb = XLSX.read(ab, { type: 'array' });
+      const sheet = wb.Sheets[wb.SheetNames[0]];
+      const html = XLSX.utils.sheet_to_html(sheet, { editable: false });
+      area.innerHTML = `<div style="overflow:auto;width:100%;height:100%;padding:12px;">${html}</div>`;
+      // Basic table styling
+      const style = document.createElement('style');
+      style.textContent = `
+        #preview-area table { border-collapse: collapse; font-size: 13px; font-family: sans-serif; }
+        #preview-area th { background: #f0f0f0; border: 1px solid #ccc; padding: 6px 10px; text-align: left; white-space: nowrap; }
+        #preview-area td { border: 1px solid #ddd; padding: 5px 10px; white-space: nowrap; }
+      `;
+      area.prepend(style);
+      return;
+    }
+
+    // Unsupported — offer download
+    const r = await fetch('/api/preview/' + fileId);
+    if (!r.ok) throw new Error((await r.json()).error);
+    const { url } = await r.json();
+    area.innerHTML = `<div class="no-preview">此文件类型暂不支持预览，请使用下载链接查看<br><br><a href="${url}" class="btn btn-outline btn-sm" download>下载文件</a></div>`;
   } catch(e) {
     area.innerHTML = `<div class="no-preview">预览失败：${e.message}</div>`;
   }
