@@ -106,13 +106,7 @@
     width: 480px; max-width: 96vw;
   }
   .modal h3 { margin-bottom: 16px; font-size: 15px; }
-  .modal .share-url {
-    width: 100%; border: 1px solid var(--border); border-radius: 4px;
-    padding: 8px 10px; font-size: 13px; background: var(--bg);
-    word-break: break-all; outline: none;
-  }
   .modal .modal-footer { margin-top: 16px; display: flex; justify-content: flex-end; gap: 8px; }
-  .copy-hint { font-size: 12px; color: green; margin-top: 6px; min-height: 16px; }
 
   /* preview modal */
   #preview-modal {
@@ -200,19 +194,6 @@
     </div>
     <div id="preview-area">
       <div class="no-preview">加载中…</div>
-    </div>
-  </div>
-</div>
-
-<!-- ── Share Modal ── -->
-<div class="modal-backdrop" id="share-modal">
-  <div class="modal">
-    <h3>分享链接（无需登录可下载）</h3>
-    <textarea class="share-url" id="share-url" rows="3" readonly></textarea>
-    <div class="copy-hint" id="copy-hint"></div>
-    <div class="modal-footer">
-      <button class="btn btn-outline btn-sm" onclick="copyLink()">复制</button>
-      <button class="btn btn-outline btn-sm" onclick="closeModal()">关闭</button>
     </div>
   </div>
 </div>
@@ -343,29 +324,35 @@ async function loadBreadcrumb(folderId) {
 }
 
 // ── Share ─────────────────────────────────────────────────────────────────
+// 显示/隐藏 toast
+let shareToastTimer = null;
+function showShareToast(msg) {
+  let el = document.getElementById('share-toast');
+  if (!el) {
+    el = document.createElement('div');
+    el.id = 'share-toast';
+    el.style.cssText = 'position:fixed;bottom:24px;left:50%;transform:translateX(-50%);background:#333;color:#fff;padding:8px 20px;border-radius:20px;font-size:14px;z-index:9999;transition:opacity .3s;pointer-events:none;';
+    document.body.appendChild(el);
+  }
+  el.textContent = msg;
+  el.style.opacity = '1';
+  if (shareToastTimer) clearTimeout(shareToastTimer);
+  shareToastTimer = setTimeout(() => { el.style.opacity = '0'; }, 2000);
+}
+
 async function getShareLink(fileId) {
-  const r = await fetch('/api/share/' + fileId);
-  const d = await r.json();
-  document.getElementById('share-url').value = d.url;
-  document.getElementById('copy-hint').textContent = '';
-  document.getElementById('share-modal').classList.add('open');
-}
-
-function copyLink() {
-  const el = document.getElementById('share-url');
-  navigator.clipboard.writeText(el.value).then(() => {
-    document.getElementById('copy-hint').textContent = '已复制到剪贴板';
-  });
-}
-
-function closeModal() {
-  document.getElementById('share-modal').classList.remove('open');
+  try {
+    const r = await fetch('/api/share/' + fileId);
+    if (!r.ok) throw new Error('获取链接失败');
+    const d = await r.json();
+    await navigator.clipboard.writeText(d.url);
+    showShareToast('已复制到剪贴板 ✅');
+  } catch(e) {
+    showShareToast('复制失败，请手动复制');
+  }
 }
 
 // close modal on backdrop click
-document.getElementById('share-modal').addEventListener('click', function(e) {
-  if (e.target === this) closeModal();
-});
 document.getElementById('preview-modal').addEventListener('click', function(e) {
   if (e.target === this) closePreview();
 });
