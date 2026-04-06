@@ -10,6 +10,8 @@ const { google } = require('googleapis');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
+// Service Account 无法访问 'root'，需指定被共享的文件夹 ID
+const ROOT_FOLDER_ID = process.env.ROOT_FOLDER_ID || 'root';
 
 // ─── Middleware ────────────────────────────────────────────────────────────
 app.use(express.json());
@@ -109,7 +111,7 @@ app.get('/api/auth', (req, res) => {
 
 // List files in a folder
 app.get('/api/files', requireLogin, async (req, res) => {
-  const folderId = req.query.folderId || 'root';
+  const folderId = req.query.folderId || ROOT_FOLDER_ID;
   try {
     const drive = getDriveClient();
     const response = await drive.files.list({
@@ -127,15 +129,27 @@ app.get('/api/files', requireLogin, async (req, res) => {
 
 // Get folder breadcrumb path
 app.get('/api/path', requireLogin, async (req, res) => {
-  const folderId = req.query.folderId || 'root';
-  if (folderId === 'root') return res.json({ path: [{ id: 'root', name: 'My Drive' }] });
+  const folderId = req.query.folderId || ROOT_FOLDER_ID;
+  if (folderId === ROOT_FOLDER_ID) {
+    // 根目录：直接返回根节点名称（尝试从 Drive 读取，失败则用 'My Drive'）
+    try {
+      const drive = getDriveClient();
+      if (ROOT_FOLDER_ID === 'root') {
+        return res.json({ path: [{ id: ROOT_FOLDER_ID, name: 'My Drive' }] });
+      }
+      const meta = await drive.files.get({ fileId: ROOT_FOLDER_ID, fields: 'id,name' });
+      return res.json({ path: [{ id: ROOT_FOLDER_ID, name: meta.data.name }] });
+    } catch {
+      return res.json({ path: [{ id: ROOT_FOLDER_ID, name: 'My Drive' }] });
+    }
+  }
 
   try {
     const drive = getDriveClient();
     const chain = [];
     let current = folderId;
 
-    while (current && current !== 'root') {
+    while (current && current !== ROOT_FOLDER_ID) {
       const meta = await drive.files.get({
         fileId: current,
         fields: 'id,name,parents'
@@ -143,7 +157,15 @@ app.get('/api/path', requireLogin, async (req, res) => {
       chain.unshift({ id: meta.data.id, name: meta.data.name });
       current = meta.data.parents ? meta.data.parents[0] : null;
     }
-    chain.unshift({ id: 'root', name: 'My Drive' });
+    // 把根节点名称也补进面包屑
+    try {
+      const drive2 = getDriveClient();
+      const rootName = ROOT_FOLDER_ID === 'root' ? 'My Drive'
+        : (await drive2.files.get({ fileId: ROOT_FOLDER_ID, fields: 'name' })).data.name;
+      chain.unshift({ id: ROOT_FOLDER_ID, name: rootName });
+    } catch {
+      chain.unshift({ id: ROOT_FOLDER_ID, name: 'My Drive' });
+    }
     res.json({ path: chain });
   } catch (err) {
     console.error('[Drive] 路径错误:', err.message);

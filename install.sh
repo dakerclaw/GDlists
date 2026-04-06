@@ -137,7 +137,19 @@ SA_EMAIL=$(node -e "
 echo ""
 info "Service Account 邮箱: $SA_EMAIL"
 echo -e "  ${YELLOW}⚠  请将 Drive 文件夹共享给以上邮箱，否则 GDList 无法读取任何文件！${NC}"
-prompt "确认已共享（或稍后再共享），按回车继续…"; read -r
+echo ""
+echo "  共享步骤："
+echo "  1. 打开 Google Drive，右键要展示的文件夹 → 共享"
+echo "  2. 添加成员：$SA_EMAIL，权限选「查看者」"
+echo "  3. 点击发送（提示无法通知，正常忽略）"
+echo "  4. 复制该文件夹的 URL，取 /folders/ 后面的字符串作为 文件夹 ID"
+echo "     示例：https://drive.google.com/drive/folders/1BxiMVs0XRA5nFMdKvBdBZjg"
+echo "           文件夹 ID = 1BxiMVs0XRA5nFMdKvBdBZjg"
+echo ""
+prompt "请输入已共享的 Drive 文件夹 ID:"; read -r ROOT_FOLDER_ID
+while [ -z "$ROOT_FOLDER_ID" ]; do
+  prompt "文件夹 ID 不能为空，重输:"; read -r ROOT_FOLDER_ID
+done
 
 # ── 5. 写入配置并启动 ─────────────────────────────────────────────────────
 section "步骤 5/5  写入配置并启动"
@@ -151,6 +163,7 @@ SESSION_SECRET=${SESSION_SECRET}
 ADMIN_USERNAME=${ADMIN_USERNAME}
 ADMIN_PASSWORD_HASH=${ADMIN_HASH}
 GOOGLE_SERVICE_ACCOUNT_JSON=${INSTALL_DIR}/service-account-key.json
+ROOT_FOLDER_ID=${ROOT_FOLDER_ID}
 ENVEOF
 
 chmod 600 "$INSTALL_DIR/.env"
