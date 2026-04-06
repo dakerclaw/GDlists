@@ -156,8 +156,8 @@ app.get('/api/path', requireLogin, async (req, res) => {
 app.get('/api/share/:fileId', requireLogin, (req, res) => {
   const { fileId } = req.params;
   const token = Buffer.from(JSON.stringify({
-    id: fileId,
-    exp: Date.now() + (process.env.SHARE_TTL_HOURS || 72) * 3600 * 1000
+    id: fileId
+    // no expiry — links are permanent
   })).toString('base64url');
   const host = `${req.protocol}://${req.get('host')}`;
   res.json({ url: `${host}/dl/${token}` });
@@ -171,10 +171,6 @@ app.get('/dl/:token', async (req, res) => {
   } catch {
     return res.status(400).send('Invalid link');
   }
-  if (payload.exp < Date.now()) {
-    return res.status(410).send('Link has expired');
-  }
-
   try {
     const drive = getDriveClient();
     const meta = await drive.files.get({

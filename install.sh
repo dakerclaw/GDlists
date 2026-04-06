@@ -142,7 +142,6 @@ prompt "确认已共享（或稍后再共享），按回车继续…"; read -r
 # ── 5. 写入配置并启动 ─────────────────────────────────────────────────────
 section "步骤 5/5  写入配置并启动"
 prompt "端口 [默认 3000]:"; read -r PORT; PORT="${PORT:-3000}"
-prompt "分享链接有效期（小时）[默认 72]:"; read -r TTL; TTL="${TTL:-72}"
 
 SESSION_SECRET=$(node -e "process.stdout.write(require('crypto').randomBytes(32).toString('hex'))")
 
@@ -152,7 +151,6 @@ SESSION_SECRET=${SESSION_SECRET}
 ADMIN_USERNAME=${ADMIN_USERNAME}
 ADMIN_PASSWORD_HASH=${ADMIN_HASH}
 GOOGLE_SERVICE_ACCOUNT_JSON=${INSTALL_DIR}/service-account-key.json
-SHARE_TTL_HOURS=${TTL}
 ENVEOF
 
 chmod 600 "$INSTALL_DIR/.env"
