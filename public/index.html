@@ -122,7 +122,7 @@
   <div class="login-card">
     <h1>GDList</h1>
     <label for="username">用户名</label>
-    <input type="text" id="username" autocomplete="username" placeholder="admin">
+    <input type="text" id="username" autocomplete="username" placeholder="username">
     <label for="password">密码</label>
     <input type="password" id="password" autocomplete="current-password" placeholder="••••••••">
     <button class="btn btn-primary" onclick="doLogin()">登录</button>
@@ -174,7 +174,7 @@
 
 <script>
 const FOLDER_MIME = 'application/vnd.google-apps.folder';
-let currentFolder = 'root';
+let currentFolder = '';  // 空字符串会触发后端 ROOT_FOLDER_ID
 
 // ── Utility ───────────────────────────────────────────────────────────────
 function fmtSize(bytes) {
@@ -236,7 +236,7 @@ async function doLogout() {
 function showApp() {
   document.getElementById('login-page').style.display = 'none';
   document.getElementById('app-page').style.display = 'block';
-  loadFiles('root');
+  loadFiles('');  // 空字符串触发后端 ROOT_FOLDER_ID
 }
 
 // ── File listing ──────────────────────────────────────────────────────────
