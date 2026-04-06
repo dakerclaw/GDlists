@@ -185,6 +185,55 @@ app.get('/api/share/:fileId', requireLogin, (req, res) => {
   res.json({ url: `${host}/dl/${token}` });
 });
 
+// Generate a signed preview token (login required)
+app.get('/api/preview/:fileId', requireLogin, (req, res) => {
+  const { fileId } = req.params;
+  const token = Buffer.from(JSON.stringify({ id: fileId })).toString('base64url');
+  const host = `${req.protocol}://${req.get('host')}`;
+  res.json({ token, url: `${host}/pv/${token}` });
+});
+
+// Public inline preview endpoint
+app.get('/pv/:token', async (req, res) => {
+  let payload;
+  try {
+    payload = JSON.parse(Buffer.from(req.params.token, 'base64url').toString());
+  } catch {
+    return res.status(400).send('Invalid token');
+  }
+
+  try {
+    const drive = getDriveClient();
+    const meta = await drive.files.get({
+      fileId: payload.id,
+      fields: 'name,mimeType,size'
+    });
+
+    const { name, mimeType } = meta.data;
+    // inline display for browser-renderable types
+    const disposition = mimeType.startsWith('text/')
+      || mimeType === 'application/json'
+      || mimeType.startsWith('image/')
+      || mimeType === 'application/pdf'
+      || mimeType.startsWith('video/')
+      || mimeType.startsWith('audio/')
+      ? 'inline'
+      : 'attachment';
+
+    res.setHeader('Content-Disposition', `${disposition}; filename*=UTF-8''${encodeURIComponent(name)}`);
+    res.setHeader('Content-Type', mimeType || 'application/octet-stream');
+
+    const stream = await drive.files.get(
+      { fileId: payload.id, alt: 'media' },
+      { responseType: 'stream' }
+    );
+    stream.data.pipe(res);
+  } catch (err) {
+    console.error('[Drive] 预览错误:', err.message);
+    res.status(500).send('Preview failed: ' + err.message);
+  }
+});
+
 // Public download endpoint — no login required
 app.get('/dl/:token', async (req, res) => {
   let payload;
