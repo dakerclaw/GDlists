@@ -104,7 +104,7 @@ echo "  5. 把想访问的 Drive 文件夹共享给 Service Account 邮箱"
 echo ""
 echo "  ── 操作说明 ─────────────────────────────────────"
 echo "  每个账号可添加多个根文件夹（分别绑定同一个 SA）"
-echo "  输入文件夹 ID 后按回车，输入 ~ 表示该账号文件夹输入完毕"
+echo "  输入文件夹 ID 后按回车，直接回车表示该账号文件夹输入完毕"
 echo "  全部账号配置完后选择端口，然后启动服务"
 echo ""
 
@@ -158,24 +158,19 @@ collect_one_account() {
 
   while true; do
     if [ $folder_num -eq 1 ]; then
-      prompt "账号 #${acc_num} - 文件夹 #${folder_num} ID（输入 ~ 跳过此账号）:"
+      prompt "账号 #${acc_num} - 文件夹 #${folder_num} ID（直接回车跳过此账号）:"
     else
-      prompt "账号 #${acc_num} - 文件夹 #${folder_num} ID（输入 ~ 完成此账号）:"
+      prompt "账号 #${acc_num} - 文件夹 #${folder_num} ID（直接回车完成此账号）:"
     fi
     read -r fid
 
-    if [ "$fid" = "~" ]; then
+    if [ -z "$fid" ]; then
       if [ $folder_num -eq 1 ]; then
         echo -e "  ${YELLOW}该账号未输入任何文件夹，已跳过${NC}"
         return 1  # 跳过此账号
       else
         break  # 正常结束此账号
       fi
-    fi
-
-    if [ -z "$fid" ]; then
-      echo -e "  ${YELLOW}文件夹 ID 不能为空${NC}"
-      continue
     fi
 
     src_id="acc${acc_num}f${folder_num}"
