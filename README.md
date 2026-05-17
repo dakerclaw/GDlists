@@ -1,5 +1,7 @@
 # GDlists
 
+GDlist的多账号多文件夹版本
+
 > Google Drive 文件列表服务，带登录保护和免密下载链接
 
 **特性：** 用户名+密码登录 · 文件夹无限层级导航 · 免登录下载 · Service Account 永久认证 · **支持多账号多 Drive 文件夹**
@@ -82,8 +84,8 @@ systemctl restart gdlists
 如果服务器上 git 没有配置用户，或网络无法访问 GitHub：
 
 1. 在本地修改代码
-   2. 手动上传 `server.js`、`public/index.html`、`package.json`、`install.sh` 等文件到服务器 `/opt/gdlists/`
-   3. 执行 `npm install --omit=dev && systemctl restart gdlists`
+2. 手动上传 `server.js`、`public/index.html`、`package.json`、`install.sh` 等文件到服务器 `/opt/gdlists/`
+3. 执行 `npm install --omit=dev && systemctl restart gdlists`
 
 ### 更新后必做
 
@@ -137,41 +139,6 @@ ls /opt/gdlists
 ## 🗂️ 多账号 / 多 Drive 文件夹
 
 GDlists 支持在单个服务中同时挂载多个 Google 账号的多个共享文件夹，登录后通过顶部标签页切换。
-
-### 配置方式
-
-在 `.env` 中用 `DRIVE_SOURCES`（JSON 数组）代替旧的单源配置：
-
-```env
-# 多源模式（推荐）
-DRIVE_SOURCES=[{"id":"work","name":"工作盘","keyFile":"/opt/gdlists/sa-work.json","folderId":"1AbcWorkFolderId"},{"id":"personal","name":"个人盘","keyFile":"/opt/gdlists/sa-personal.json","folderId":"1XyzPersonalFolderId"},{"id":"team","name":"团队共享","keyFile":"/opt/gdlists/sa-team.json","folderId":"1TeamFolderId"}]
-```
-
-| 字段 | 说明 | 是否必填 |
-|------|------|----------|
-| `id` | 唯一标识符，用于 API 路由（英文数字横线） | 必填 |
-| `name` | 显示名称，出现在标签页上 | 必填 |
-| `keyFile` | 该账号对应的 Service Account JSON 绝对路径 | 必填 |
-| `folderId` | 此源的根文件夹 ID | 必填（不能用 'root'） |
-
-### 兼容旧单源配置
-
-如果 `.env` 中没有 `DRIVE_SOURCES`，继续使用旧配置：
-
-```env
-GOOGLE_SERVICE_ACCOUNT_JSON=/opt/gdlists/service-account.json
-ROOT_FOLDER_ID=1AbcFolderId
-```
-
-### 操作流程
-
-1. 为每个账号/文件夹分别准备 Service Account JSON 文件，上传到服务器
-2. 将各文件夹共享给对应的 Service Account 邮箱（查看器权限即可）
-3. 在 `.env` 中填写 `DRIVE_SOURCES`
-4. 重启服务：`systemctl restart gdlists`
-5. 登录后，顶部出现数据源标签栏（单源时自动隐藏）
-
-> 💡 每个数据源独立使用各自的 Service Account 凭据，账号之间完全隔离。
 
 ---
 
