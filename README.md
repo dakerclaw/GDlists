@@ -25,7 +25,7 @@
 ### 第二步：安装服务
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/dakerclaw/GDlist/main/install.sh -o install.sh
+curl -fsSL https://raw.githubusercontent.com/dakerclaw/GDlists/main/install.sh -o install.sh
 bash install.sh
 ```
 
