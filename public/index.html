@@ -1,0 +1,846 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>GDList</title>
+<!-- ── PDF.js ─────────────────────────────────────────────────────────────────── -->
+<script>
+  // 前端版本号：服务端启动时自动替换
+  var APP_VERSION = '20260517';
+  // 数据源列表：服务端启动时注入（格式：[{id, name}, ...]）
+  var DRIVE_SOURCES = [];
+</script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js?v=20260517"></script>
+<script>pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js?v=20260517';</script>
+
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    --bg: #f5f5f5;
+    --surface: #ffffff;
+    --border: #e0e0e0;
+    --text: #212121;
+    --text-muted: #757575;
+    --accent: #1a73e8;
+    --accent-hover: #1557b0;
+    --danger: #d32f2f;
+    --row-hover: #f8f9fa;
+    --font: system-ui, -apple-system, 'Segoe UI', sans-serif;
+  }
+
+  body { background: var(--bg); color: var(--text); font-family: var(--font); font-size: 14px; }
+
+  /* ── Login ── */
+  #login-page {
+    display: flex; align-items: center; justify-content: center;
+    min-height: 100vh;
+  }
+  .login-card {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 8px; padding: 40px 36px; width: 320px;
+  }
+  .login-card h1 { font-size: 20px; margin-bottom: 24px; text-align: center; }
+  .login-card label { display: block; font-size: 12px; color: var(--text-muted); margin-bottom: 4px; }
+  .login-card input {
+    width: 100%; border: 1px solid var(--border); border-radius: 4px;
+    padding: 8px 10px; font-size: 14px; margin-bottom: 16px;
+    outline: none; transition: border-color .15s;
+  }
+  .login-card input:focus { border-color: var(--accent); }
+  .btn {
+    display: inline-block; padding: 8px 18px; border-radius: 4px; border: none;
+    cursor: pointer; font-size: 14px; font-family: var(--font); transition: background .15s;
+  }
+  .btn-primary { background: var(--accent); color: #fff; width: 100%; }
+  .btn-primary:hover { background: var(--accent-hover); }
+  .btn-sm { padding: 4px 12px; font-size: 12px; }
+  .header-actions { display: flex; align-items: center; gap: 8px; }
+  header .btn-primary { background: var(--accent); color: #fff; width: auto; }
+  header .btn-primary:hover { background: var(--accent-hover); }
+  .btn-outline { background: transparent; border: 1px solid var(--border); color: var(--text); }
+  .btn-outline:hover { background: var(--row-hover); }
+  .btn-danger { background: transparent; border: 1px solid var(--danger); color: var(--danger); }
+  .btn-danger:hover { background: #fee; }
+  .error-msg { color: var(--danger); font-size: 12px; margin-top: 8px; min-height: 16px; }
+
+  /* ── App ── */
+  #app-page { display: none; }
+
+  header {
+    background: var(--surface); border-bottom: 1px solid var(--border);
+    padding: 0 24px; height: 52px;
+    display: flex; align-items: center; justify-content: space-between;
+  }
+  header .logo { font-weight: 600; font-size: 16px; color: var(--text); }
+  header .actions { display: flex; align-items: center; gap: 12px; }
+  header .user-info { color: var(--text-muted); font-size: 13px; }
+
+  /* ── Source Tabs ── */
+  #source-bar {
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+    padding: 0 24px;
+    display: none; /* 单源时隐藏 */
+    gap: 0;
+    overflow-x: auto;
+  }
+  #source-bar.show { display: flex; }
+  .source-tab {
+    padding: 10px 18px;
+    border: none;
+    border-bottom: 3px solid transparent;
+    background: transparent;
+    color: var(--text-muted);
+    font-size: 13px;
+    cursor: pointer;
+    white-space: nowrap;
+    transition: color .15s, border-color .15s;
+    font-family: var(--font);
+  }
+  .source-tab:hover { color: var(--text); }
+  .source-tab.active {
+    color: var(--accent);
+    border-bottom-color: var(--accent);
+    font-weight: 600;
+  }
+
+  .container { max-width: 1100px; margin: 0 auto; padding: 24px 16px; }
+
+  /* breadcrumb */
+  .breadcrumb { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; margin-bottom: 16px; font-size: 13px; }
+  .breadcrumb span { color: var(--text-muted); }
+  .breadcrumb a { color: var(--accent); text-decoration: none; cursor: pointer; }
+  .breadcrumb a:hover { text-decoration: underline; }
+
+  /* toolbar */
+  .toolbar { display: flex; gap: 10px; margin-bottom: 12px; flex-wrap: wrap; }
+  .search-input {
+    flex: 1; min-width: 200px;
+    border: 1px solid var(--border); border-radius: 4px;
+    padding: 7px 12px; font-size: 13px; outline: none;
+    transition: border-color .15s;
+  }
+  .search-input:focus { border-color: var(--accent); }
+  .sort-select {
+    border: 1px solid var(--border); border-radius: 4px;
+    padding: 7px 12px; font-size: 13px; background: var(--surface);
+    cursor: pointer; outline: none;
+  }
+  .sort-select:focus { border-color: var(--accent); }
+
+  /* file table */
+  .file-table { width: 100%; border-collapse: collapse; background: var(--surface); border: 1px solid var(--border); border-radius: 6px; overflow: hidden; }
+  .file-table th {
+    text-align: left; padding: 10px 14px; font-size: 12px; font-weight: 600;
+    color: var(--text-muted); border-bottom: 1px solid var(--border); background: #fafafa;
+  }
+  .file-table td { padding: 9px 14px; border-bottom: 1px solid var(--border); }
+  .file-table tr:last-child td { border-bottom: none; }
+  .file-table tbody tr:hover { background: var(--row-hover); }
+
+  .file-icon { margin-right: 8px; font-size: 15px; }
+  .file-name { display: flex; align-items: center; }
+  .file-name a { color: var(--accent); text-decoration: none; cursor: pointer; }
+  .file-name a:hover { text-decoration: underline; }
+  .file-name span { color: var(--text); }
+
+  .col-name { width: 50%; }
+  .col-size { width: 12%; color: var(--text-muted); }
+  .col-modified { width: 18%; color: var(--text-muted); }
+  .col-action { width: 20%; text-align: right; white-space: nowrap; }
+
+  /* action buttons */
+  .action-btns { display: flex; gap: 4px; justify-content: flex-end; }
+  .btn-cache { background: transparent; border: 1px solid var(--border); color: var(--text-muted); }
+  .btn-cache:hover { border-color: #f59e0b; color: #f59e0b; background: #fffbeb; }
+  .btn-cache.cached { border-color: #16a34a; color: #16a34a; background: #f0fdf4; }
+  .btn-cache.caching { border-color: #f59e0b; color: #f59e0b; background: #fffbeb; opacity: .7; pointer-events: none; }
+  .btn-share { background: transparent; border: 1px solid var(--border); color: var(--text-muted); }
+  .btn-share:hover { border-color: var(--accent); color: var(--accent); background: #eff6ff; }
+
+  .loading { text-align: center; padding: 40px; color: var(--text-muted); }
+  .empty { text-align: center; padding: 40px; color: var(--text-muted); }
+
+  /* modal */
+  .modal-backdrop {
+    display: none; position: fixed; inset: 0;
+    background: rgba(0,0,0,.4); z-index: 100;
+    align-items: center; justify-content: center;
+  }
+  .modal-backdrop.open { display: flex; }
+  .modal {
+    background: var(--surface); border-radius: 8px; padding: 28px 28px 20px;
+    width: 480px; max-width: 96vw;
+  }
+  .modal h3 { margin-bottom: 16px; font-size: 15px; }
+  .modal .modal-footer { margin-top: 16px; display: flex; justify-content: flex-end; gap: 8px; }
+
+  /* preview modal */
+  #preview-modal { align-items: flex-start; padding-top: 40px; }
+  #preview-modal .modal {
+    width: 900px; max-width: 96vw; height: 80vh;
+    display: flex; flex-direction: column; padding: 20px 24px 16px;
+  }
+  #preview-modal .modal-header {
+    display: flex; align-items: center; justify-content: space-between;
+    margin-bottom: 12px; flex-shrink: 0;
+  }
+  #preview-modal .modal-header h3 { margin-bottom: 0; }
+  #preview-area {
+    flex: 1; min-height: 0; overflow: auto;
+    border: 1px solid var(--border); border-radius: 4px;
+    background: #fff;
+  }
+  #preview-area img { display: block; max-width: 100%; margin: 0 auto; }
+  #preview-area pre {
+    padding: 16px; margin: 0; white-space: pre-wrap; word-break: break-all;
+    font-size: 13px; line-height: 1.6; overflow: auto; height: 100%;
+  }
+  #preview-area iframe { width: 100%; height: 100%; border: none; }
+  #pdf-container { width: 100%; height: 100%; overflow: auto; background: #525659; }
+  #pdf-container canvas { display: block; margin: 0 auto; }
+  .pdf-loading { color: #ccc; text-align: center; padding: 20px; }
+  .pdf-page-controls {
+    position: sticky; bottom: 0; background: #333; color: #fff;
+    padding: 8px 16px; display: flex; align-items: center; gap: 12px;
+    font-size: 13px;
+  }
+  .pdf-page-controls button { background: #555; border: 1px solid #777; color: #fff; padding: 2px 10px; border-radius: 4px; cursor: pointer; }
+  .pdf-page-controls button:disabled { opacity: .4; cursor: not-allowed; }
+  .no-preview {
+    display: flex; align-items: center; justify-content: center;
+    height: 100%; color: var(--text-muted); font-size: 14px;
+  }
+
+  /* ── Responsive / Mobile ── */
+  @media (max-width: 640px) {
+    header { padding: 0 12px; }
+    header .logo { font-size: 14px; }
+    header .user-info { display: none; }
+    .container { padding: 12px 8px; }
+    #source-bar { padding: 0 12px; }
+    .source-tab { padding: 8px 12px; font-size: 12px; }
+    .file-table { font-size: 13px; }
+    .file-table th, .file-table td { padding: 8px 10px; }
+    .col-size, .col-modified { display: none; }
+    .col-name { width: auto; }
+    .col-action { width: auto; }
+    .btn-sm { padding: 3px 8px; font-size: 11px; }
+    .toolbar { flex-direction: column; }
+    .search-input { min-width: unset; width: 100%; }
+    .sort-select { width: 100%; }
+  }
+
+  /* ── Results count ── */
+  .results-info { font-size: 12px; color: var(--text-muted); margin-bottom: 8px; min-height: 18px; }
+</style>
+</head>
+<body>
+
+<!-- ── Login Page ── -->
+<div id="login-page">
+  <div class="login-card">
+    <h1>GDList</h1>
+    <label for="username">用户名</label>
+    <input type="text" id="username" autocomplete="username" placeholder="username">
+    <label for="password">密码</label>
+    <input type="password" id="password" autocomplete="current-password" placeholder="••••••••">
+    <button class="btn btn-primary" onclick="doLogin()">登录</button>
+    <div class="error-msg" id="login-error"></div>
+  </div>
+</div>
+
+<!-- ── App Page ── -->
+<div id="app-page">
+  <header>
+    <div class="logo">📁 GDList</div>
+    <div class="actions header-actions">
+      <span class="user-info" id="header-user"></span>
+      <button class="btn btn-outline btn-sm" onclick="doLogout()">退出</button>
+    </div>
+  </header>
+
+  <!-- 数据源切换标签（多源时显示） -->
+  <div id="source-bar"></div>
+
+  <div class="container">
+    <div class="breadcrumb" id="breadcrumb"></div>
+
+    <!-- Search and Sort Bar -->
+    <div class="toolbar">
+      <input type="text" id="search-input" class="search-input" placeholder="🔍 搜索文件…" oninput="handleSearch(this.value)">
+      <select id="sort-select" class="sort-select" onchange="handleSort(this.value)">
+        <option value="folder,name">默认排序</option>
+        <option value="name">按名称 ↑</option>
+        <option value="name desc">按名称 ↓</option>
+        <option value="size">按大小 ↑</option>
+        <option value="size desc">按大小 ↓</option>
+        <option value="modifiedTime">最新在前</option>
+        <option value="modifiedTime desc">最旧在前</option>
+      </select>
+    </div>
+    <div class="results-info" id="results-info"></div>
+
+    <table class="file-table" id="file-table">
+      <thead>
+        <tr>
+          <th class="col-name">名称</th>
+          <th class="col-size">大小</th>
+          <th class="col-modified">修改时间</th>
+          <th class="col-action">操作</th>
+        </tr>
+      </thead>
+      <tbody id="file-list">
+        <tr><td colspan="4" class="loading">加载中…</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<!-- ── Preview Modal ──-->
+<div class="modal-backdrop" id="preview-modal">
+  <div class="modal">
+    <div class="modal-header">
+      <h3 id="preview-title">文件预览</h3>
+      <button class="btn btn-outline btn-sm" onclick="closePreview()">关闭</button>
+    </div>
+    <div id="preview-area">
+      <div class="no-preview">加载中…</div>
+    </div>
+  </div>
+</div>
+
+<script>
+const FOLDER_MIME = 'application/vnd.google-apps.folder';
+let currentFolder = '';   // 空字符串触发后端 ROOT_FOLDER_ID
+let currentSourceId = ''; // 当前选中的数据源 ID（空字符串使用后端第一个源）
+let allFiles = [];
+let currentSearch = '';
+let currentSort = 'folder,name';
+
+// ── Utility ───────────────────────────────────────────────────────────────
+function fmtSize(bytes) {
+  if (!bytes) return '—';
+  const b = parseInt(bytes);
+  if (b < 1024) return b + ' B';
+  if (b < 1024 * 1024) return (b / 1024).toFixed(1) + ' KB';
+  if (b < 1024 * 1024 * 1024) return (b / 1024 / 1024).toFixed(1) + ' MB';
+  return (b / 1024 / 1024 / 1024).toFixed(2) + ' GB';
+}
+function fmtDate(iso) {
+  if (!iso) return '—';
+  return new Date(iso).toLocaleString('zh-CN', { hour12: false }).replace(/\//g, '-');
+}
+function fileIcon(mimeType) {
+  if (mimeType === FOLDER_MIME) return '📁';
+  if (mimeType.startsWith('image/')) return '🖼️';
+  if (mimeType.startsWith('video/')) return '🎬';
+  if (mimeType.startsWith('audio/')) return '🎵';
+  if (mimeType.includes('pdf')) return '📄';
+  if (mimeType.includes('zip') || mimeType.includes('tar') || mimeType.includes('rar')) return '🗜️';
+  if (mimeType.includes('spreadsheet') || mimeType.includes('excel')) return '📊';
+  if (mimeType.includes('document') || mimeType.includes('word')) return '📝';
+  return '📎';
+}
+function escapeHtml(str) {
+  if (!str) return '';
+  return String(str)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+// 将 sourceId 附加到 URL query 中
+function withSource(url, sourceId) {
+  const sid = sourceId || currentSourceId;
+  if (!sid) return url;
+  const sep = url.includes('?') ? '&' : '?';
+  return `${url}${sep}sourceId=${encodeURIComponent(sid)}`;
+}
+
+const _scriptCache = {};
+async function loadScript(url, globalVar) {
+  if (_scriptCache[url]) return window[globalVar];
+  return new Promise((resolve, reject) => {
+    const s = document.createElement('script');
+    s.src = url;
+    s.onload = () => { _scriptCache[url] = true; resolve(window[globalVar]); };
+    s.onerror = () => reject(new Error('CDN 加载失败: ' + url));
+    document.head.appendChild(s);
+  });
+}
+
+// ── Source Tabs ───────────────────────────────────────────────────────────
+function renderSourceBar(sources) {
+  const bar = document.getElementById('source-bar');
+  if (!sources || sources.length <= 1) {
+    // 单源不显示标签栏，但记录 sourceId 供 API 使用
+    if (sources && sources.length === 1) currentSourceId = sources[0].id;
+    bar.classList.remove('show');
+    return;
+  }
+  bar.classList.add('show');
+  bar.innerHTML = sources.map(s =>
+    `<button class="source-tab${s.id === currentSourceId ? ' active' : ''}"
+      onclick="switchSource('${escapeHtml(s.id)}')">${escapeHtml(s.name)}</button>`
+  ).join('');
+}
+
+function switchSource(sourceId) {
+  if (sourceId === currentSourceId) return;
+  currentSourceId = sourceId;
+  // 更新标签高亮
+  document.querySelectorAll('.source-tab').forEach(btn => {
+    btn.classList.toggle('active', btn.textContent === DRIVE_SOURCES.find(s => s.id === sourceId)?.name);
+  });
+  // 回到根目录
+  loadFiles('');
+}
+
+// ── Auth ──────────────────────────────────────────────────────────────────
+async function checkAuth() {
+  const r = await fetch('/api/auth');
+  const d = await r.json();
+  if (d.authenticated) showApp();
+}
+
+async function doLogin() {
+  const username = document.getElementById('username').value.trim();
+  const password = document.getElementById('password').value;
+  document.getElementById('login-error').textContent = '';
+  const r = await fetch('/api/login', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ username, password })
+  });
+  if (r.ok) {
+    document.getElementById('header-user').textContent = username;
+    showApp();
+  } else {
+    const d = await r.json();
+    document.getElementById('login-error').textContent = d.error || '登录失败';
+  }
+}
+
+async function doLogout() {
+  await fetch('/api/logout', { method: 'POST' });
+  document.getElementById('app-page').style.display = 'none';
+  document.getElementById('login-page').style.display = 'flex';
+  document.getElementById('password').value = '';
+}
+
+function showApp() {
+  document.getElementById('login-page').style.display = 'none';
+  document.getElementById('app-page').style.display = 'block';
+  // 初始化数据源（服务端已注入 DRIVE_SOURCES）
+  if (DRIVE_SOURCES && DRIVE_SOURCES.length > 0) {
+    currentSourceId = DRIVE_SOURCES[0].id;
+    renderSourceBar(DRIVE_SOURCES);
+  }
+  loadFiles('');
+}
+
+// ── File listing ──────────────────────────────────────────────────────────
+async function loadFiles(folderId) {
+  currentFolder = folderId;
+  const tbody = document.getElementById('file-list');
+  tbody.innerHTML = '<tr><td colspan="4" class="loading">加载中…</td></tr>';
+  document.getElementById('results-info').textContent = '';
+
+  loadBreadcrumb(folderId);
+
+  const url = withSource('/api/files?folderId=' + encodeURIComponent(folderId));
+  const r = await fetch(url);
+  if (!r.ok) {
+    tbody.innerHTML = `<tr><td colspan="4" class="empty">加载失败: ${escapeHtml((await r.json()).error)}</td></tr>`;
+    return;
+  }
+  const { files } = await r.json();
+  allFiles = files || [];
+
+  currentSearch = '';
+  document.getElementById('search-input').value = '';
+  document.getElementById('sort-select').value = 'folder,name';
+  currentSort = 'folder,name';
+
+  renderFiles();
+  refreshCacheStatus();
+}
+
+async function refreshCacheStatus() {
+  const fileItems = allFiles.filter(f => f.mimeType !== FOLDER_MIME);
+  for (const f of fileItems) {
+    try {
+      const r = await fetch(withSource('/api/cache-status/' + f.id));
+      if (!r.ok) continue;
+      const d = await r.json();
+      if (d.cached) {
+        const btn = document.getElementById('cache-btn-' + f.id);
+        if (btn) { btn.classList.add('cached'); btn.textContent = '✅ 已缓存'; }
+      }
+    } catch { /* ignore */ }
+  }
+}
+
+function renderFiles() {
+  const tbody = document.getElementById('file-list');
+  const resultsInfo = document.getElementById('results-info');
+
+  let files = allFiles;
+  if (currentSearch.trim()) {
+    const q = currentSearch.trim().toLowerCase();
+    files = files.filter(f => f.name.toLowerCase().includes(q));
+  }
+
+  files = sortFiles(files, currentSort);
+
+  if (currentSearch.trim()) {
+    resultsInfo.textContent = `共 ${allFiles.length} 个文件，已筛选 ${files.length} 个`;
+  } else if (files.length > 0) {
+    resultsInfo.textContent = `共 ${files.length} 个文件`;
+  } else {
+    resultsInfo.textContent = '';
+  }
+
+  if (!files.length) {
+    tbody.innerHTML = `<tr><td colspan="4" class="empty">${currentSearch.trim() ? '没有匹配的文件' : '此文件夹为空'}</td></tr>`;
+    return;
+  }
+
+  tbody.innerHTML = files.map(f => {
+    const isFolder = f.mimeType === FOLDER_MIME;
+    const escapedName = escapeHtml(f.name);
+    const safeId = escapeHtml(f.id);
+    const safeMime = escapeHtml(f.mimeType);
+
+    const nameCell = isFolder
+      ? `<a onclick="loadFiles('${safeId}')">${escapedName}</a>`
+      : `<a onclick="doPreview('${safeId}', '${safeMime}')" title="点击预览">${escapedName}</a>`;
+
+    const actionCell = isFolder ? '' : `
+      <div class="action-btns">
+        <button class="btn btn-sm btn-cache" id="cache-btn-${safeId}"
+          onclick="doCacheFile('${safeId}', this)" title="缓存到服务器">
+          💾 缓存
+        </button>
+        <button class="btn btn-sm btn-share"
+          onclick="doShareLink('${safeId}', '${escapedName}')" title="复制分享链接">
+          🔗 分享
+        </button>
+      </div>`;
+
+    return `<tr>
+      <td class="col-name">
+        <div class="file-name">
+          <span class="file-icon">${fileIcon(f.mimeType)}</span>${nameCell}
+        </div>
+      </td>
+      <td class="col-size">${fmtSize(f.size)}</td>
+      <td class="col-modified">${fmtDate(f.modifiedTime)}</td>
+      <td class="col-action">${actionCell}</td>
+    </tr>`;
+  }).join('');
+}
+
+function sortFiles(files, sortKey) {
+  const isDesc = sortKey.includes(' desc');
+  const key = sortKey.replace(' desc', '');
+  return [...files].sort((a, b) => {
+    const isAFolder = a.mimeType === FOLDER_MIME;
+    const isBFolder = b.mimeType === FOLDER_MIME;
+    if (sortKey === 'folder,name') {
+      if (isAFolder !== isBFolder) return isAFolder ? -1 : 1;
+      return a.name.localeCompare(b.name, 'zh-CN');
+    }
+    if (isAFolder !== isBFolder) return isAFolder ? -1 : 1;
+    if (key === 'name') return isDesc ? b.name.localeCompare(a.name, 'zh-CN') : a.name.localeCompare(b.name, 'zh-CN');
+    if (key === 'size') {
+      const aS = parseInt(a.size) || 0, bS = parseInt(b.size) || 0;
+      return isDesc ? bS - aS : aS - bS;
+    }
+    if (key === 'modifiedTime') {
+      const aT = new Date(a.modifiedTime || 0).getTime(), bT = new Date(b.modifiedTime || 0).getTime();
+      return isDesc ? bT - aT : aT - bT;
+    }
+    return 0;
+  });
+}
+
+function handleSearch(value) { currentSearch = value; renderFiles(); }
+function handleSort(value) { currentSort = value; renderFiles(); }
+
+async function loadBreadcrumb(folderId) {
+  const bc = document.getElementById('breadcrumb');
+  bc.innerHTML = '';
+  const r = await fetch(withSource('/api/path?folderId=' + encodeURIComponent(folderId)));
+  if (!r.ok) return;
+  const { path } = await r.json();
+  path.forEach((seg, i) => {
+    if (i > 0) bc.insertAdjacentHTML('beforeend', '<span>/</span>');
+    if (i === path.length - 1) {
+      bc.insertAdjacentHTML('beforeend', `<span>${escapeHtml(seg.name)}</span>`);
+    } else {
+      bc.insertAdjacentHTML('beforeend', `<a onclick="loadFiles('${escapeHtml(seg.id)}')">${escapeHtml(seg.name)}</a>`);
+    }
+  });
+}
+
+// ── Cache & Share ─────────────────────────────────────────────────────────
+async function doCacheFile(fileId, btn) {
+  if (btn.classList.contains('cached')) { showToast('✅ 已缓存，无需重复操作'); return; }
+  btn.classList.add('caching'); btn.textContent = '⏳ 缓存中…';
+  try {
+    const r = await fetch(withSource('/api/cache/' + fileId));
+    const d = await r.json();
+    if (!r.ok || d.status === 'error') throw new Error(d.error || '缓存失败');
+    btn.classList.remove('caching'); btn.classList.add('cached'); btn.textContent = '✅ 已缓存';
+    showToast(`缓存完成：${d.name} (${fmtSize(d.size)})`);
+  } catch(e) {
+    btn.classList.remove('caching'); btn.textContent = '💾 缓存';
+    showToast('❌ ' + e.message);
+  }
+}
+
+async function doShareLink(fileId, fileName) {
+  showToast('⏳ 获取链接中…');
+  try {
+    const r = await fetch(withSource('/api/link/' + fileId));
+    if (!r.ok) throw new Error('获取链接失败');
+    const d = await r.json();
+    await copyToClipboard(d.url);
+    showToast('🔗 分享链接已复制');
+  } catch(e) {
+    showToast('❌ ' + (e.message || '获取链接失败'));
+  }
+}
+
+async function copyToClipboard(text) {
+  if (navigator.clipboard && window.isSecureContext) {
+    await navigator.clipboard.writeText(text); return;
+  }
+  const ta = document.createElement('textarea');
+  ta.value = text;
+  ta.style.cssText = 'position:fixed;top:-9999px;left:-9999px;opacity:0;';
+  document.body.appendChild(ta);
+  ta.select(); ta.setSelectionRange(0, 99999);
+  const ok = document.execCommand('copy');
+  document.body.removeChild(ta);
+  if (!ok) throw new Error('复制失败，请手动复制');
+}
+
+let _toastTimer = null;
+function showToast(msg) {
+  let el = document.getElementById('toast');
+  if (!el) {
+    el = document.createElement('div'); el.id = 'toast';
+    el.style.cssText = 'position:fixed;bottom:24px;left:50%;transform:translateX(-50%);background:#333;color:#fff;padding:8px 20px;border-radius:20px;font-size:14px;z-index:9999;transition:opacity .3s;pointer-events:none;white-space:nowrap;';
+    document.body.appendChild(el);
+  }
+  el.textContent = msg; el.style.opacity = '1';
+  if (_toastTimer) clearTimeout(_toastTimer);
+  _toastTimer = setTimeout(() => { el.style.opacity = '0'; }, 2500);
+}
+
+document.getElementById('preview-modal').addEventListener('click', function(e) {
+  if (e.target === this) closePreview();
+});
+
+// ── PDF.js Viewer ────────────────────────────────────────────────────────────
+const TEXT_PREVIEW_MAX = 500 * 1024;
+
+async function renderPdfViewer(container, pdfUrl, fileName, fileSize) {
+  container.innerHTML = `
+    <div id="pdf-container">
+      <div id="pdf-pages"></div>
+    </div>
+    <div class="pdf-page-controls">
+      <button id="pdf-prev" disabled>◀ 上一页</button>
+      <span id="pdf-page-info">第 1 / 1 页</span>
+      <button id="pdf-next" disabled>下一页 ▶</button>
+      <span style="margin-left:auto;font-size:12px;color:#aaa;">
+        ${fileName} · ${(fileSize / 1024 / 1024).toFixed(1)} MB
+      </span>
+    </div>`;
+
+  const pagesEl = document.getElementById('pdf-pages');
+  const prevBtn = document.getElementById('pdf-prev');
+  const nextBtn = document.getElementById('pdf-next');
+  const pageInfo = document.getElementById('pdf-page-info');
+
+  try {
+    const loadingTask = pdfjsLib.getDocument({ url: pdfUrl, rangeChunkSize: 64 * 1024 });
+    const pdf = await loadingTask.promise;
+    const totalPages = pdf.numPages;
+    pageInfo.textContent = `第 1 / ${totalPages} 页`;
+    const rendered = {};
+
+    async function renderPage(num) {
+      if (rendered[num]) return;
+      const page = await pdf.getPage(num);
+      const scale = Math.min((container.clientWidth - 40) / page.getViewport({ scale: 1 }).width, 2.0);
+      const viewport = page.getViewport({ scale });
+      const canvas = document.createElement('canvas');
+      canvas.width = viewport.width; canvas.height = viewport.height;
+      canvas.dataset.page = num;
+      const wrapper = document.createElement('div');
+      wrapper.style.cssText = 'margin:16px auto;position:relative;';
+      wrapper.appendChild(canvas);
+      pagesEl.appendChild(wrapper);
+      await page.render({ canvasContext: canvas.getContext('2d'), viewport }).promise;
+      rendered[num] = true;
+    }
+
+    async function lazyRender() {
+      const observer = new IntersectionObserver(async (entries) => {
+        for (const entry of entries) {
+          if (entry.isIntersecting) {
+            const pageNum = parseInt(entry.target.dataset.page);
+            if (!rendered[pageNum]) await renderPage(pageNum);
+            observer.unobserve(entry.target);
+          }
+        }
+      }, { root: null, rootMargin: '200px' });
+
+      for (let i = 1; i <= Math.min(3, totalPages); i++) await renderPage(i);
+      pagesEl.querySelectorAll('canvas').forEach(c => observer.observe(c));
+      prevBtn.disabled = false; nextBtn.disabled = totalPages <= 1;
+    }
+    lazyRender();
+
+    prevBtn.addEventListener('click', async () => {
+      const current = parseInt(pageInfo.textContent.match(/第 (\d+)/)?.[1] || 1);
+      if (current > 1) {
+        const target = document.querySelector(`[data-page="${current - 1}"]`)?.closest('div');
+        if (target) target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      }
+    });
+    nextBtn.addEventListener('click', async () => {
+      const current = parseInt(pageInfo.textContent.match(/第 (\d+)/)?.[1] || 1);
+      if (current < totalPages) {
+        const target = document.querySelector(`[data-page="${current + 1}"]`)?.closest('div');
+        if (target) target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      }
+    });
+
+    const scrollObserver = new IntersectionObserver((entries) => {
+      for (const entry of entries) {
+        if (entry.isIntersecting) {
+          const num = parseInt(entry.target.dataset.page);
+          pageInfo.textContent = `第 ${num} / ${totalPages} 页`;
+          prevBtn.disabled = num <= 1; nextBtn.disabled = num >= totalPages;
+        }
+      }
+    }, { root: null, rootMargin: '50%' });
+    pagesEl.querySelectorAll('canvas').forEach(c => scrollObserver.observe(c));
+
+  } catch (err) {
+    pagesEl.innerHTML = `<div class="no-preview">PDF 预览失败: ${err.message}</div>`;
+  }
+}
+
+async function doPreview(fileId, mimeType) {
+  const area = document.getElementById('preview-area');
+  area.innerHTML = '<div class="no-preview">加载中…</div>';
+  document.getElementById('preview-title').textContent = '文件预览';
+  document.getElementById('preview-modal').classList.add('open');
+
+  try {
+    if (mimeType.startsWith('image/') || mimeType.startsWith('video/')
+      || mimeType.startsWith('audio/') || mimeType === 'application/pdf') {
+      const r = await fetch(withSource('/api/preview/' + fileId));
+      if (!r.ok) throw new Error((await r.json()).error);
+      const { url, name: fileName, size: fileSize } = await r.json();
+      if (mimeType.startsWith('image/')) {
+        area.innerHTML = `<img src="${url}" alt="preview" style="max-width:100%;max-height:100%;object-fit:contain;display:block;margin:auto;">`;
+      } else if (mimeType.startsWith('video/')) {
+        area.innerHTML = `<video src="${url}" controls style="display:block;width:100%;height:100%">您的浏览器不支持视频播放</video>`;
+      } else if (mimeType.startsWith('audio/')) {
+        area.innerHTML = `<audio src="${url}" controls style="display:block;margin:40px auto">您的浏览器不支持音频播放</audio>`;
+      } else {
+        const pv2Url = url.replace('/pv/', '/pv2/');
+        area.innerHTML = '<div class="no-preview" id="pdf-status">⏳ 正在准备预览…</div>';
+        renderPdfViewer(area, pv2Url, fileName || '', fileSize || 0);
+        return;
+      }
+      return;
+    }
+
+    if (mimeType.startsWith('text/') || mimeType === 'application/json') {
+      const r = await fetch(withSource('/api/preview/' + fileId));
+      if (!r.ok) throw new Error((await r.json()).error);
+      const { url } = await r.json();
+      const tr = await fetch(url);
+      if (!tr.ok) throw new Error('无法加载文件内容');
+      const size = parseInt(tr.headers.get('content-length') || '0');
+      if (size > TEXT_PREVIEW_MAX) {
+        area.innerHTML = `<div class="no-preview">文件过大（${(size/1024).toFixed(0)} KB），请使用下载链接查看</div>`;
+      } else {
+        const text = await tr.text();
+        const lang = mimeType === 'application/json' ? 'json'
+          : mimeType.includes('html') ? 'html'
+          : mimeType.includes('css') ? 'css'
+          : mimeType.includes('xml') ? 'xml' : 'plain';
+        area.innerHTML = `<pre class="language-${lang}">${escapeHtml(text)}</pre>`;
+      }
+      return;
+    }
+
+    if (mimeType === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+      || mimeType === 'application/vnd.google-apps.document') {
+      area.innerHTML = '<div class="no-preview">正在加载预览器…</div>';
+      const mammoth = await loadScript('https://cdnjs.cloudflare.com/ajax/libs/mammoth/1.11.0/mammoth.browser.min.js', 'mammoth');
+      const r = await fetch(withSource('/api/preview-data/' + fileId));
+      if (!r.ok) throw new Error((await r.json()).error);
+      const ab = await r.arrayBuffer();
+      const result = await mammoth.convertToHtml({ arrayBuffer: ab });
+      area.innerHTML = `<div style="overflow:auto;width:100%;height:100%;padding:20px;font-family:sans-serif;line-height:1.6;">${result.value}</div>`;
+      if (result.messages && result.messages.length) console.warn('mammoth warnings:', result.messages);
+      return;
+    }
+
+    if (mimeType === 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+      || mimeType === 'application/vnd.ms-excel'
+      || mimeType === 'application/vnd.google-apps.spreadsheet') {
+      area.innerHTML = '<div class="no-preview">正在加载预览器…</div>';
+      const XLSX = await loadScript('https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js', 'XLSX');
+      const r = await fetch(withSource('/api/preview-data/' + fileId));
+      if (!r.ok) throw new Error((await r.json()).error);
+      const ab = await r.arrayBuffer();
+      const wb = XLSX.read(ab, { type: 'array' });
+      const sheet = wb.Sheets[wb.SheetNames[0]];
+      const html = XLSX.utils.sheet_to_html(sheet, { editable: false });
+      area.innerHTML = `<div style="overflow:auto;width:100%;height:100%;padding:12px;">${html}</div>`;
+      const style = document.createElement('style');
+      style.textContent = `
+        #preview-area table { border-collapse: collapse; font-size: 13px; font-family: sans-serif; }
+        #preview-area th { background: #f0f0f0; border: 1px solid #ccc; padding: 6px 10px; text-align: left; white-space: nowrap; }
+        #preview-area td { border: 1px solid #ddd; padding: 5px 10px; white-space: nowrap; }
+      `;
+      area.prepend(style);
+      return;
+    }
+
+    const r = await fetch(withSource('/api/preview/' + fileId));
+    if (!r.ok) throw new Error((await r.json()).error);
+    const { url } = await r.json();
+    area.innerHTML = `<div class="no-preview">此文件类型暂不支持预览，请使用下载链接查看<br><br><a href="${url}" class="btn btn-outline btn-sm" download>下载文件</a></div>`;
+  } catch(e) {
+    area.innerHTML = `<div class="no-preview">预览失败：${e.message}</div>`;
+  }
+}
+
+function closePreview() {
+  document.getElementById('preview-modal').classList.remove('open');
+}
+
+document.addEventListener('keydown', e => {
+  if (e.key === 'Enter' && document.getElementById('login-page').style.display !== 'none') {
+    doLogin();
+  }
+});
+
+// ── Init ──────────────────────────────────────────────────────────────────
+checkAuth();
+</script>
+</body>
+</html>
