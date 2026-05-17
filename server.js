@@ -20,7 +20,7 @@ const APP_VERSION = '20260517';
 // ─── Multi-source Drive config ────────────────────────────────────────────────
 //
 // DRIVE_SOURCES 格式（JSON 数组，写在 .env 中）：
-//   DRIVE_SOURCES=[{"id":"work","name":"工作盘","keyFile":"/opt/gdlist/sa1.json","folderId":"1Abc..."},{"id":"personal","name":"个人盘","keyFile":"/opt/gdlist/sa2.json","folderId":"1Xyz..."}]
+//   DRIVE_SOURCES=[{"id":"work","name":"工作盘","keyFile":"/opt/gdlists/sa1.json","folderId":"1Abc..."},{"id":"personal","name":"个人盘","keyFile":"/opt/gdlists/sa2.json","folderId":"1Xyz..."}]
 //
 // 兼容旧配置（GOOGLE_SERVICE_ACCOUNT_JSON + ROOT_FOLDER_ID）：
 //   如果没有 DRIVE_SOURCES，自动使用旧配置作为 id="default" 的单源
@@ -645,6 +645,6 @@ loadCacheIndex();
 setInterval(cleanCache, 6 * 60 * 60 * 1000); // 每 6 小时清理一次
 
 app.listen(PORT, () => {
-  console.log(`GDList running on http://localhost:${PORT}`);
+  console.log(`GDlists running on http://localhost:${PORT}`);
   console.log(`已配置 ${DRIVE_SOURCES.length} 个数据源: ${DRIVE_SOURCES.map(s => s.name).join(', ')}`);
 });

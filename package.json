@@ -1,5 +1,5 @@
 {
-  "name": "gdlist",
+  "name": "gdlists",
   "version": "1.0.0",
   "description": "Google Drive file listing with login protection and public download links",
   "main": "server.js",

@@ -1,10 +1,10 @@
 #!/bin/bash
-# GDList — Interactive One-click Installer (Multi-source)
+# GDlists — Interactive One-click Installer (Multi-source)
 set -e
 
-REPO="https://github.com/dakerclaw/GDlist.git"
-INSTALL_DIR="/opt/gdlist"
-SERVICE_NAME="gdlist"
+REPO="https://github.com/dakerclaw/GDlists.git"
+INSTALL_DIR="/opt/gdlists"
+SERVICE_NAME="gdlists"
 NODE_MIN=18
 
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; CYAN='\033[0;36m'; BOLD='\033[1m'; NC='\033[0m'
@@ -16,7 +16,7 @@ warn()    { echo -e "${YELLOW}[!]${NC} $*"; }
 
 if [ ! -t 0 ]; then
   echo -e "${RED}[错误]${NC} 需要交互式终端，请先下载再运行："
-  echo "  curl -fsSL https://raw.githubusercontent.com/dakerclaw/GDlist/main/install.sh -o install.sh"
+  echo "  curl -fsSL https://raw.githubusercontent.com/dakerclaw/GDlists/main/install.sh -o install.sh"
   echo "  bash install.sh"
   exit 1
 fi
@@ -24,7 +24,7 @@ fi
 
 echo ""
 echo -e "${CYAN}${BOLD}╔════════════════════════════════════════╗${NC}"
-echo -e "${CYAN}${BOLD}║   GDList — 多账号多文件夹 交互安装    ║${NC}"
+echo -e "${CYAN}${BOLD}║   GDlists — 多账号多文件夹 交互安装    ║${NC}"
 echo -e "${CYAN}${BOLD}╚════════════════════════════════════════╝${NC}"
 echo ""
 
@@ -118,7 +118,7 @@ else
 fi
 
 # 全局配置数组（node 可直接操作的临时文件）
-SOURCES_TMP="/tmp/gdlist_sources_$$.json"
+SOURCES_TMP="/tmp/gdlists_sources_$$.json"
 echo "[]" > "$SOURCES_TMP"
 
 # 账号序号
@@ -258,7 +258,7 @@ info ".env 已写入（权限 600）✓"
 NODE_BIN=$(which node)
 cat > /etc/systemd/system/${SERVICE_NAME}.service << SVCEOF
 [Unit]
-Description=GDList – Google Drive file listing
+Description=GDlists – Google Drive file listing
 After=network.target
 
 [Service]
@@ -294,6 +294,6 @@ echo ""
 echo -e "  访问地址: ${BOLD}http://${SERVER_IP}:${PORT}${NC}"
 echo -e "  用户名:   ${BOLD}${ADMIN_USERNAME}${NC}"
 echo ""
-echo "  systemctl status gdlist   # 查看状态"
-echo "  journalctl -u gdlist -f   # 查看日志"
-echo "  bash ${INSTALL_DIR}/install.sh   # 重新配置"
+echo "  systemctl status gdlists   # 查看状态"
+  echo "  journalctl -u gdlists -f   # 查看日志"
+  echo "  bash ${INSTALL_DIR}/install.sh   # 重新配置"
