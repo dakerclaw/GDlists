@@ -1,5 +1,5 @@
 {
-  "name": "gdlist",
+  "name": "gdlists",
   "version": "1.0.0",
   "description": "Google Drive file listing with login protection and public download links",
   "main": "server.js",
@@ -14,7 +14,7 @@
     "dotenv": "^16.3.1",
     "bcryptjs": "^2.4.3",
     "cookie-parser": "^1.4.6",
-    "multer": "^1.4.5-lts.1"
+    "express-rate-limit": "^7.1.5"
   },
   "devDependencies": {
     "nodemon": "^3.0.2"

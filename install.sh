@@ -1,10 +1,10 @@
 #!/bin/bash
-# GDList — Interactive One-click Installer (Service Account)
+# GDlists — Interactive One-click Installer (Multi-source)
 set -e
 
-REPO="https://github.com/dakerclaw/GDlist.git"
-INSTALL_DIR="/opt/gdlist"
-SERVICE_NAME="gdlist"
+REPO="https://github.com/dakerclaw/GDlists.git"
+INSTALL_DIR="/opt/gdlists"
+SERVICE_NAME="gdlists"
 NODE_MIN=18
 
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; CYAN='\033[0;36m'; BOLD='\033[1m'; NC='\033[0m'
@@ -12,18 +12,19 @@ info()    { echo -e "${GREEN}[✔]${NC} $*"; }
 error()   { echo -e "${RED}[✘]${NC} $*" ; exit 1; }
 section() { echo -e "\n${CYAN}${BOLD}── $* ──${NC}"; }
 prompt()  { echo -ne "${BOLD}$*${NC} "; }
+warn()    { echo -e "${YELLOW}[!]${NC} $*"; }
 
 if [ ! -t 0 ]; then
   echo -e "${RED}[错误]${NC} 需要交互式终端，请先下载再运行："
-  echo "  curl -fsSL https://raw.githubusercontent.com/dakerclaw/GDlist/main/install.sh -o install.sh"
-  echo "  sudo bash install.sh"
+  echo "  curl -fsSL https://raw.githubusercontent.com/dakerclaw/GDlists/main/install.sh -o install.sh"
+  echo "  bash install.sh"
   exit 1
 fi
-[[ $EUID -ne 0 ]] && error "请用 root 权限运行：sudo bash install.sh"
+[[ $EUID -ne 0 ]] && error "请用 root 权限运行：bash install.sh"
 
 echo ""
 echo -e "${CYAN}${BOLD}╔════════════════════════════════════════╗${NC}"
-echo -e "${CYAN}${BOLD}║   GDList — Service Account 认证安装   ║${NC}"
+echo -e "${CYAN}${BOLD}║   GDlists — 多账号多文件夹 交互安装    ║${NC}"
 echo -e "${CYAN}${BOLD}╚════════════════════════════════════════╝${NC}"
 echo ""
 
@@ -86,8 +87,9 @@ done
 ADMIN_HASH=$(node -e "const b=require('bcryptjs');b.hash(process.argv[1],10).then(h=>process.stdout.write(h))" "$P1")
 info "密码哈希 ✓"
 
-# ── 4. Service Account ───────────────────────────────────────────────────
-section "步骤 4/5  Service Account 密钥"
+# ── 4. 多账号多文件夹配置 ─────────────────────────────────────────────────
+section "步骤 4/5  多账号多文件夹配置"
+
 echo ""
 echo "  Service Account 是 Google 官方服务端认证方式："
 echo "  - 无需浏览器，全程在服务器完成"
@@ -100,12 +102,11 @@ echo "  3. 创建 Service Account，下载 JSON 密钥文件"
 echo "  4. 用任意方式打开下载的 JSON 文件，复制全部内容"
 echo "  5. 把想访问的 Drive 文件夹共享给 Service Account 邮箱"
 echo ""
-echo "  即将打开编辑器，请将 JSON 内容粘贴进去并保存："
-echo "  - nano: Ctrl+Shift+V 粘贴 → Ctrl+X → Y → Enter 保存"
+echo "  ── 操作说明 ─────────────────────────────────────"
+echo "  每个账号可添加多个根文件夹（分别绑定同一个 SA）"
+echo "  输入文件夹 ID 后按回车，直接回车表示该账号文件夹输入完毕"
+echo "  全部账号配置完后选择端口，然后启动服务"
 echo ""
-prompt "准备好后按回车打开编辑器…"; read -r
-
-KEY_PATH="${INSTALL_DIR}/service-account-key.json"
 
 # 确保编辑器可用
 if command -v nano &>/dev/null; then
@@ -116,33 +117,110 @@ else
   $PKG install -y nano; EDITOR_CMD="nano"
 fi
 
-# 打开编辑器让用户粘贴 JSON
-touch "$KEY_PATH" && chmod 600 "$KEY_PATH"
-$EDITOR_CMD "$KEY_PATH"
+# 全局配置数组（node 可直接操作的临时文件）
+SOURCES_TMP="/tmp/gdlists_sources_$$.json"
+echo "[]" > "$SOURCES_TMP"
 
-# 验证文件非空
-if [ ! -s "$KEY_PATH" ]; then
-  error "文件为空，请重新运行安装并粘贴 JSON 内容。"
+# 账号序号
+ACCOUNT_NUM=1
+
+collect_one_account() {
+  local acc_num=$1
+  local key_file sa_email folder_num fid src_id
+
+  echo ""
+  echo -e "${BOLD}══════════ 账号 #${acc_num} ══════════${NC}"
+  echo "请准备好 Service Account JSON 文件内容，然后按回车打开编辑器"
+  prompt "准备好后按回车…"; read -r
+
+  key_file="${INSTALL_DIR}/sa_${acc_num}.json"
+  touch "$key_file" && chmod 600 "$key_file"
+  $EDITOR_CMD "$key_file"
+
+  if [ ! -s "$key_file" ]; then
+    error "文件为空，请重新运行安装并粘贴 JSON 内容。"
+  fi
+
+  sa_email=$(node -e "
+    const k = JSON.parse(require('fs').readFileSync('$key_file','utf8'));
+    if (!k.client_email) { console.error('缺少 client_email'); process.exit(1); }
+    console.log(k.client_email);
+  " 2>&1) || error "JSON 内容无效：${sa_email}"
+
+  echo ""
+  info "Service Account 邮箱: $sa_email"
+  echo -e "  ${YELLOW}⚠  请将 Drive 文件夹共享给以上邮箱（权限：查看者）${NC}"
+  echo "  文件夹 ID 获取：打开 Drive 目标文件夹，复制 URL 中 /folders/ 后面的字符串"
+  echo ""
+
+  # 为当前账号收集多个根文件夹
+  folder_num=1
+
+  while true; do
+    if [ $folder_num -eq 1 ]; then
+      prompt "账号 #${acc_num} - 文件夹 #${folder_num} ID（直接回车跳过此账号）:"
+    else
+      prompt "账号 #${acc_num} - 文件夹 #${folder_num} ID（直接回车完成此账号）:"
+    fi
+    read -r fid
+
+    if [ -z "$fid" ]; then
+      if [ $folder_num -eq 1 ]; then
+        echo -e "  ${YELLOW}该账号未输入任何文件夹，已跳过${NC}"
+        return 1  # 跳过此账号
+      else
+        break  # 正常结束此账号
+      fi
+    fi
+
+    src_id="acc${acc_num}f${folder_num}"
+
+    # 追加到临时 JSON 文件
+    node -e "
+      const fs = require('fs');
+      const arr = JSON.parse(fs.readFileSync('$SOURCES_TMP','utf8'));
+      arr.push({id:'$src_id', name:'账号${acc_num}-文件夹${folder_num}', keyFile:'$key_file', folderId:'$fid'});
+      fs.writeFileSync('$SOURCES_TMP', JSON.stringify(arr));
+    "
+
+    info "已添加: $src_id → $fid"
+    folder_num=$((folder_num + 1))
+  done
+
+  return 0
+}
+
+while true; do
+  collect_one_account "$ACCOUNT_NUM"
+  echo ""
+  prompt "是否添加更多账号？(直接回车继续添加，输入 n 完成配置):"
+  read -r more
+  if [ "$more" = "n" ] || [ "$more" = "N" ]; then
+    break
+  fi
+  ACCOUNT_NUM=$((ACCOUNT_NUM + 1))
+done
+
+# 读取最终配置
+ALL_SOURCES_JSON=$(cat "$SOURCES_TMP")
+rm -f "$SOURCES_TMP"
+
+SOURCE_COUNT=$(node -e "console.log(JSON.parse('$ALL_SOURCES_JSON').length)")
+
+if [ "$SOURCE_COUNT" = "0" ]; then
+  error "未配置任何数据源，请重新运行安装。"
 fi
 
-# 验证 JSON 格式并提取 SA 邮箱
-SA_EMAIL=$(node -e "
-  try {
-    const k = JSON.parse(require('fs').readFileSync('$KEY_PATH','utf8'));
-    if (!k.client_email) { console.error('缺少 client_email 字段'); process.exit(1); }
-    console.log(k.client_email);
-  } catch(e) { console.error('JSON 解析失败: ' + e.message); process.exit(1); }
-" 2>&1) || error "JSON 内容无效：${SA_EMAIL}"
+info "共配置 $SOURCE_COUNT 个数据源"
 
+# 预览配置
 echo ""
-info "Service Account 邮箱: $SA_EMAIL"
-echo -e "  ${YELLOW}⚠  请将 Drive 文件夹共享给以上邮箱（权限：查看者）${NC}"
-echo "  文件夹 ID 获取：打开 Drive 目标文件夹，复制 URL 中 /folders/ 后面的字符串"
-prompt "文件夹 ID:"; read -r ROOT_FOLDER_ID
-while [ -z "$ROOT_FOLDER_ID" ]; do
-  prompt "文件夹 ID 不能为空，重输:"; read -r ROOT_FOLDER_ID
-done
-info "文件夹 ID: $ROOT_FOLDER_ID"
+echo "  ── 配置预览 ─────────────────────────────────────"
+node -e "
+  const arr = JSON.parse('$ALL_SOURCES_JSON');
+  arr.forEach((s, i) => console.log('  [' + (i+1) + '] id=' + s.id + ' | name=' + s.name + ' | folder=' + s.folderId));
+"
+echo "  ───────────────────────────────────────────────"
 
 # ── 5. 写入配置并启动 ─────────────────────────────────────────────────────
 section "步骤 5/5  写入配置并启动"
@@ -150,13 +228,23 @@ prompt "端口 [默认 3000]:"; read -r PORT; PORT="${PORT:-3000}"
 
 SESSION_SECRET=$(node -e "process.stdout.write(require('crypto').randomBytes(32).toString('hex'))")
 
+# 转义 JSON 字符串用于 heredoc（转义 \ 和 "）
+SOURCES_ESCAPED=$(echo "$ALL_SOURCES_JSON" | node -e "
+  const chunks = [];
+  process.stdin.on('data', c => chunks.push(c));
+  process.stdin.on('end', () => {
+    const str = Buffer.concat(chunks).toString();
+    const escaped = str.replace(/\\\\/g, '\\\\\\\\').replace(/\"/g, '\\\\\"');
+    process.stdout.write(escaped);
+  });
+")
+
 cat > "$INSTALL_DIR/.env" << ENVEOF
 PORT=${PORT}
 SESSION_SECRET=${SESSION_SECRET}
 ADMIN_USERNAME=${ADMIN_USERNAME}
 ADMIN_PASSWORD_HASH=${ADMIN_HASH}
-GOOGLE_SERVICE_ACCOUNT_JSON=${INSTALL_DIR}/service-account-key.json
-ROOT_FOLDER_ID=${ROOT_FOLDER_ID}
+DRIVE_SOURCES=${SOURCES_ESCAPED}
 ENVEOF
 
 chmod 600 "$INSTALL_DIR/.env"
@@ -165,7 +253,7 @@ info ".env 已写入（权限 600）✓"
 NODE_BIN=$(which node)
 cat > /etc/systemd/system/${SERVICE_NAME}.service << SVCEOF
 [Unit]
-Description=GDList – Google Drive file listing
+Description=GDlists – Google Drive file listing
 After=network.target
 
 [Service]
@@ -200,8 +288,7 @@ echo -e "${GREEN}${BOLD}╚═════════════════�
 echo ""
 echo -e "  访问地址: ${BOLD}http://${SERVER_IP}:${PORT}${NC}"
 echo -e "  用户名:   ${BOLD}${ADMIN_USERNAME}${NC}"
-echo -e "  ${YELLOW}SA 邮箱: ${SA_EMAIL}（需已共享 Drive 文件夹）${NC}"
 echo ""
-echo "  systemctl status gdlist   # 查看状态"
-echo "  journalctl -u gdlist -f   # 查看日志"
-echo "  bash ${INSTALL_DIR}/install.sh   # 重新配置"
+echo "  systemctl status gdlists   # 查看状态"
+  echo "  journalctl -u gdlists -f   # 查看日志"
+  echo "  bash ${INSTALL_DIR}/install.sh   # 重新配置"
