@@ -2,3 +2,14 @@
 node_modules/
 cache/
 preview-cache/
+
+# Service Account 私钥：install.sh 会写到项目目录，绝不能提交
+sa_*.json
+service-account*.json
+*-service-account.json
+
+# 缓存上传过程中的临时文件
+*.part
+
+# 本地测试产物
+.smoke/

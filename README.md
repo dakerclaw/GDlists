@@ -1,8 +1,16 @@
 # GDlists
 
-> Google Drive 文件列表服务，带登录保护和免密下载链接
+> Google Drive 文件列表服务：登录保护 + 签名直链 + 在线预览 + 多账号多文件夹
 
-**特性：** 用户名+密码登录 · 文件夹无限层级导航 · 免登录下载 · Service Account 永久认证 · **支持多账号多 Drive 文件夹**
+**特性**
+
+- 用户名 + 密码登录（bcrypt 校验、登录限流）
+- 文件夹无限层级浏览、搜索、排序
+- 图片 / 视频 / 音频 / PDF / 文本 / Word / Excel 在线预览
+- 免登录**签名**下载链接，可复制分享；支持 Range（断点续传、PDF 分片加载）
+- 服务端缓存：后台任务 + 进度显示，容量与保留期可配
+- 多账号、多共享文件夹，顶部标签页切换
+- Service Account 认证，无需浏览器授权
 
 ---
 
@@ -16,11 +24,11 @@
    - 点击「+ 创建 Service Account」→ 填写名称 → 完成
    - 进入详情 → 「密钥」→「添加密钥」→「创建新密钥」→「JSON」→ 下载文件
 3. **共享 Drive 文件夹**
-   - 打开你要分享的 Google Drive 文件夹
-   - 右键 → 「共享」→ 添加 Service Account 邮箱
+   - 打开要分享的 Google Drive 文件夹
+   - 右键 → 「共享」→ 添加 Service Account 邮箱，权限选「查看者」
    - 邮箱格式：`xxxxx@yyyyyy.iam.gserviceaccount.com`
 
-> ⚠️ **必须执行第 3 步！** Service Account 本身无权访问 Drive，必须共享文件夹才有权限。
+> ⚠️ 必须执行第 3 步。Service Account 本身没有 Drive 权限，共享后才有。
 
 ### 第二步：安装服务
 
@@ -30,148 +38,145 @@ bash install.sh
 ```
 
 安装过程全交互式，会依次询问：
-- 管理员用户名和密码
-- Service Account JSON 文件（粘贴内容）
-- 根目录文件夹 ID
+
+- 管理员用户名和密码（密码不回显）
+- 每个账号的 Service Account JSON（用 nano 粘贴）
+- 每个账号的根文件夹 ID（可直接粘贴 Drive URL，脚本自动提取）
 - 服务端口（默认 3000）
 
-### 第三步：访问使用
+安装结束会自动做一次健康检查。
+
+### 第三步：访问
 
 ```
 http://你的服务器IP:端口
 ```
 
+> 🔒 生产环境请务必配置 HTTPS（见「安全建议」），否则登录密码会明文经过网络。
+
 ---
 
-## 📋 部署前检查清单
+## ⚙️ 配置项
 
-- [ ] 已下载 Service Account JSON 密钥文件
-- [ ] 已将 Drive 文件夹共享给 Service Account 邮箱
-- [ ] 准备好要分享的 Drive 文件夹 ID（URL 中 `/folders/` 后面的字符串）
-- [ ] 服务器系统为 Ubuntu/Debian/CentOS/Rocky Linux
+完整模板见 [`.env.example`](.env.example)。
+
+| 变量 | 默认 | 说明 |
+| --- | --- | --- |
+| `PORT` | `3000` | 服务端口 |
+| `SESSION_SECRET` | 必填 | 会话与链接签名密钥，**32 位以上随机串**；修改后所有人需重新登录、旧链接失效 |
+| `ADMIN_USERNAME` | `admin` | 管理员用户名 |
+| `ADMIN_PASSWORD_HASH` | 必填 | bcrypt 哈希，`install.sh` 自动生成 |
+| `DRIVE_SOURCES` | — | 多数据源 JSON 数组（见下） |
+| `GOOGLE_SERVICE_ACCOUNT_JSON` | — | 旧版单源：SA 密钥路径 |
+| `ROOT_FOLDER_ID` | — | 旧版单源：根文件夹 ID |
+| `TRUST_PROXY` | `1` | 反向代理层数；直接用 Node 暴露时设为 `0` |
+| `PUBLIC_URL` | 空 | 对外地址，用于生成分享链接，如 `https://drive.example.com` |
+| `SESSION_TTL_HOURS` | `24` | 登录有效期 |
+| `SHARE_TTL_HOURS` | `0` | 分享链接有效期，`0` = 永久 |
+| `CACHE_TTL_DAYS` | `100` | 缓存保留天数 |
+| `MAX_CACHE_SIZE_GB` | `5` | 缓存容量上限，超出按最旧淘汰 |
+| `FILE_LIST_LIMIT` | `5000` | 单文件夹最多显示条数，防止超大目录拖垮浏览器 |
+
+生成密钥与密码哈希：
+
+```bash
+node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
+node -e "const b=require('bcryptjs');b.hash('你的密码',10).then(h=>console.log(h))"
+```
+
+---
+
+## 🗂️ 多账号 / 多文件夹
+
+在 `.env` 中用 JSON 数组配置，一行写完：
+
+```env
+DRIVE_SOURCES=[{"id":"work","name":"工作盘","keyFile":"/opt/gdlists/sa_1.json","folderId":"1AbcWorkFolderId"},{"id":"personal","name":"个人盘","keyFile":"/opt/gdlists/sa_2.json","folderId":"1XyzPersonalFolderId"}]
+```
+
+| 字段 | 说明 | 必填 |
+| --- | --- | --- |
+| `id` | 唯一标识，字母/数字/`_`/`-`，≤32 位，用于 API 路由 | 是 |
+| `name` | 标签页显示名称 | 是 |
+| `keyFile` | 该账号 Service Account JSON 的绝对路径 | 是 |
+| `folderId` | 该源的根文件夹 ID | 是 |
+
+- 不同源可以共用同一个 Service Account 密钥文件，绑不同文件夹
+- 只有一个源时，前端自动隐藏标签栏
+- `id` 不合法或重复会在启动日志中提示并跳过该源
+- 私钥文件请保持在项目目录并确保 `.gitignore` 生效（模板已包含 `sa_*.json`）
+
+---
+
+## 💾 缓存与分享
+
+- **分享**：点击 🔗 生成签名下载链接并复制，默认永久有效（可用 `SHARE_TTL_HOURS` 限制）
+- **缓存**：点击 💾 后服务端在后台下载到 `cache/`，按钮实时显示百分比；缓存完成后再下载走本地磁盘
+- 链接中的 token 使用 HMAC-SHA256 签名，无法通过改 fileId 伪造
+- 缓存命中时会以本地文件响应，支持 Range；缓存失效会自动回退为直连 Drive
+- 升级到 1.1.0 后，旧版未签名的链接会失效，需要重新生成
+
+---
+
+## 🔒 安全建议
+
+1. **必须启用 HTTPS**：`deploy/nginx.conf.example` 提供了反向代理模板
+2. `SESSION_SECRET` 使用随机值，不要提交到仓库
+3. `.env` 权限 600，Service Account JSON 权限 600
+4. 不要把服务直接暴露在公网 3000 端口；用 nginx/Caddy 反代并限制来源
+5. 定期查看日志：`journalctl -u gdlists -f`
+
+已内置的安全措施：
+
+- Drive 权限仅申请 `drive.readonly`
+- 登录页 15 分钟 10 次限流，成功登录不计入
+- 会话 cookie：`HttpOnly` + `SameSite=Lax`，HTTPS 下自动 `Secure`
+- 安全响应头：CSP、`X-Content-Type-Options`、`X-Frame-Options`、`Referrer-Policy`、HSTS
+- 下载/预览 token 带 HMAC 签名与防时序攻击比较
+- 文件名校验与转义，前端不使用内联事件处理器
 
 ---
 
 ## 🔧 安装后管理
 
 ```bash
-systemctl status gdlists        # 查看运行状态
-journalctl -u gdlists -f         # 实时查看日志
-systemctl restart gdlists       # 重启服务
-bash /opt/gdlists/install.sh    # 重新配置
+systemctl status gdlists         # 查看状态
+journalctl -u gdlists -f         # 实时日志
+systemctl restart gdlists        # 重启
+bash /opt/gdlists/install.sh     # 重新配置（会覆盖 .env）
+curl -s localhost:3000/api/health  # 健康检查
 ```
 
 ---
 
 ## 📦 更新指南
 
-### 自动更新（推荐）
-
 ```bash
 cd /opt/gdlists
 git fetch origin
-git reset --hard origin/main    # 如果默认分支是 main
-# 或
-git reset --hard origin/master  # 如果默认分支是 master
-npm install --omit=dev
+git reset --hard origin/main     # 或 origin/master
+npm ci --omit=dev                # 有 package-lock.json
 systemctl restart gdlists
+journalctl -u gdlists -n 20 --no-pager
 ```
 
-### 手动更新
+更新后浏览器强制刷新（Ctrl+Shift+R）。
 
-如果服务器上 git 没有配置用户，或网络无法访问 GitHub：
+**版本号**：`server.js` 的 `APP_VERSION` 会在启动时注入前端，同时用于 PDF.js 等 CDN 资源的缓存刷新；`public/index.html` 顶部的值只是本地直开时的兜底。
 
-1. 在本地修改代码
-   2. 手动上传 `server.js`、`public/index.html`、`package.json`、`install.sh` 等文件到服务器 `/opt/gdlists/`
-   3. 执行 `npm install --omit=dev && systemctl restart gdlists`
-
-### 更新后必做
-
-1. 查看日志确认启动成功：`journalctl -u gdlists -n 10 --no-pager`
-2. 浏览器强制刷新（Ctrl+Shift+R）确保加载最新前端
-3. 测试文件列表、下载、PDF 预览是否正常
-
-### 版本号说明
-
-前端版本号由 `server.js` 和 `public/index.html` 顶部的 `APP_VERSION` 控制，两者必须一致。更新代码时同步修改，例如从 `20260414` 改为 `20260415`。版本号变化会强制浏览器刷新 CDN 资源（PDF.js 等）。
+> ⚠️ `git reset --hard` 会丢弃服务器上的本地改动；缓存目录、`.env`、私钥文件都在 `.gitignore` 中，不受影响。
 
 ---
 
 ## 🗑️ 卸载指南
 
-### 步骤一：停止服务
-
 ```bash
 systemctl stop gdlists
 systemctl disable gdlists
-```
-
-### 步骤二：删除服务与文件
-
-```bash
-# 删除 systemd 服务文件
 rm /etc/systemd/system/gdlists.service
 systemctl daemon-reload
-
-# 删除项目文件（包括所有缓存）
-rm -rf /opt/gdlists
+rm -rf /opt/gdlists     # 含缓存与私钥，请提前备份
 ```
-
-> ⚠️ 这会删除所有缓存文件（`cache/` 和 `preview-cache/`），如果缓存中有重要数据请提前备份。
-
-### 步骤三：确认清理完毕
-
-```bash
-# 检查进程是否已停止
-ps aux | grep gdlists
-
-# 检查端口是否已释放
-ss -tlnp | grep 3000
-
-# 检查文件是否已删除
-ls /opt/gdlists
-```
-
----
-
-## 🗂️ 多账号 / 多 Drive 文件夹
-
-GDlists 支持在单个服务中同时挂载多个 Google 账号的多个共享文件夹，登录后通过顶部标签页切换。
-
-### 配置方式
-
-在 `.env` 中用 `DRIVE_SOURCES`（JSON 数组）代替旧的单源配置：
-
-```env
-# 多源模式（推荐）
-DRIVE_SOURCES=[{"id":"work","name":"工作盘","keyFile":"/opt/gdlists/sa-work.json","folderId":"1AbcWorkFolderId"},{"id":"personal","name":"个人盘","keyFile":"/opt/gdlists/sa-personal.json","folderId":"1XyzPersonalFolderId"},{"id":"team","name":"团队共享","keyFile":"/opt/gdlists/sa-team.json","folderId":"1TeamFolderId"}]
-```
-
-| 字段 | 说明 | 是否必填 |
-|------|------|----------|
-| `id` | 唯一标识符，用于 API 路由（英文数字横线） | 必填 |
-| `name` | 显示名称，出现在标签页上 | 必填 |
-| `keyFile` | 该账号对应的 Service Account JSON 绝对路径 | 必填 |
-| `folderId` | 此源的根文件夹 ID | 必填（不能用 'root'） |
-
-### 兼容旧单源配置
-
-如果 `.env` 中没有 `DRIVE_SOURCES`，继续使用旧配置：
-
-```env
-GOOGLE_SERVICE_ACCOUNT_JSON=/opt/gdlists/service-account.json
-ROOT_FOLDER_ID=1AbcFolderId
-```
-
-### 操作流程
-
-1. 为每个账号/文件夹分别准备 Service Account JSON 文件，上传到服务器
-2. 将各文件夹共享给对应的 Service Account 邮箱（查看器权限即可）
-3. 在 `.env` 中填写 `DRIVE_SOURCES`
-4. 重启服务：`systemctl restart gdlists`
-5. 登录后，顶部出现数据源标签栏（单源时自动隐藏）
-
-> 💡 每个数据源独立使用各自的 Service Account 凭据，账号之间完全隔离。
 
 ---
 
@@ -179,37 +184,90 @@ ROOT_FOLDER_ID=1AbcFolderId
 
 ```
 gdlists/
-├── server.js              # Express 后端
-├── install.sh             # 交互式安装脚本
+├── server.js                 # Express 后端
+├── lib/
+│   ├── token.js              # HMAC 签名 token
+│   └── range.js              # HTTP Range 解析
+├── public/index.html         # 前端（原生 HTML/CSS/JS，零构建）
+├── deploy/nginx.conf.example # 反向代理 + HTTPS 模板
+├── tools/
+│   ├── test-helpers.mjs      # lib 单元测试
+│   └── smoke.mjs             # 启动真实进程的冒烟测试
+├── install.sh                # 交互式安装脚本
 ├── package.json
-└── public/
-    └── index.html         # 前端（纯原生 HTML/CSS/JS，零依赖）
+└── .env.example
 ```
 
 ---
 
-## ⚙️ 技术细节
+## 🧪 测试
 
-| 项目 | 说明 |
-|------|------|
-| 认证方式 | Google Service Account（JWT 签名），凭据永久有效 |
-| Drive 权限 | 仅 `drive.readonly` 最小权限 |
-| 下载链接 | base64url 签名，默认 72 小时有效 |
-| 会话管理 | express-session + HttpOnly Cookie，24 小时 |
-| 前端 | 单 HTML 文件，无任何外部依赖 |
+```bash
+npm install
+npm test          # lib 单元测试（无外部依赖）
+npm run test:smoke  # 启动服务并验证路由（不需要真实 Google 凭据）
+```
+
+---
+
+## 🔌 API 一览
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| GET | `/api/health` | 健康检查（无需登录） |
+| POST | `/api/login` | 登录 |
+| POST | `/api/logout` | 退出 |
+| GET | `/api/auth` | 当前登录状态 |
+| GET | `/api/sources` | 数据源列表（仅 id/name） |
+| GET | `/api/files?folderId=&sourceId=` | 文件列表（含 `cached` 字段） |
+| GET | `/api/path?folderId=&sourceId=` | 面包屑路径 |
+| GET | `/api/link/:fileId` | 生成签名下载链接 |
+| POST | `/api/cache/:fileId` | 启动后台缓存任务 |
+| GET | `/api/cache-status/:fileId` | 缓存状态 / 进度 |
+| GET | `/api/preview/:fileId` | 预览信息与 token |
+| GET | `/pv2/:token` | 内联预览流（支持 Range） |
+| GET | `/dl/:token` | 下载流（支持 Range） |
+| GET | `/cache/:token` | 缓存文件下载（未命中回退直连） |
 
 ---
 
 ## ❓ 常见问题
 
-**Q: 显示"找不到文件"？**
-A: Drive 文件夹没有共享给 Service Account 邮箱。请执行上述「第一步：准备 Google Cloud」的第 3 步。
+**Q：显示「此文件夹为空」？**
+A：文件夹没有共享给对应 Service Account 邮箱，或 `folderId` 填错了。
 
-**Q: 想更换密码？**
-A: 重新运行 `bash /opt/gdlists/install.sh`。
+**Q：文件列表只有一部分？**
+A：单目录超过 `FILE_LIST_LIMIT`（默认 5000）会被截断，页面顶部会提示。
 
-**Q: 下载链接过期了？**
-A: 重新登录后点击文件即可生成新链接。
+**Q：PDF 预览打不开？**
+A：PDF.js 从 cdnjs 加载，服务器或浏览器需能访问 `cdnjs.cloudflare.com`；否则会提示 CDN 不可用。
 
-**Q: 如何获取文件夹 ID？**
-A: 打开目标 Drive 文件夹，复制 URL 中 `/folders/` 后面的字符串（问号前）。
+**Q：分享链接 400「链接无效或已过期」？**
+A：链接由当前 `SESSION_SECRET` 签名；改过密钥或从旧版本升级后需要重新生成。
+
+**Q：想更换密码？**
+A：重新运行 `bash /opt/gdlists/install.sh`，或手动改 `.env` 里的 `ADMIN_PASSWORD_HASH` 后重启。
+
+**Q：如何获取文件夹 ID？**
+A：打开 Drive 文件夹，复制 URL 中 `/folders/` 后面的字符串；也可以直接把整个 URL 粘给安装脚本。
+
+**Q：团队盘（Shared Drive）能用吗？**
+A：可以。列表与下载请求都带了 `supportsAllDrives` / `includeItemsFromAllDrives`，只需把团队盘文件夹共享给 SA 邮箱。
+
+---
+
+## 📝 更新记录
+
+### 1.1.0（2026-10-20）
+
+- 修复：安装脚本写入 `DRIVE_SOURCES` 时被错误转义导致启动后所有接口失败
+- 修复：安装脚本在跳过账号时因 `set -e` 直接退出
+- 修复：PDF 预览只能显示前 3 页
+- 修复：文件名可注入 HTML（XSS）、含单引号时分享按钮失效
+- 修复：文本预览大小限制失效、Range 后缀请求返回错误头
+- 修复：文件列表超过 1000 条被静默截断
+- 安全：下载 token 改为 HMAC 签名；会话改为签名 cookie（不再使用内存 store）
+- 安全：仅申请 `drive.readonly`；新增 CSP 等安全头；`/api/sources` 不再下发 folderId
+- 性能：缓存改为后台任务 + 进度；并发缓存去重；列表自带缓存状态（不再 N 次轮询）
+- 性能：统一 Drive 流式转发，支持错误处理与客户端断开清理；缓存清理逻辑修正
+- 工程：新增 `lib/` 单元测试与冒烟测试、`/api/health`、优雅退出、`package-lock.json`

@@ -1,117 +1,250 @@
 'use strict';
 
 require('dotenv').config();
+
 const express = require('express');
-const session = require('express-session');
 const cookieParser = require('cookie-parser');
 const bcrypt = require('bcryptjs');
 const rateLimit = require('express-rate-limit');
+const { google } = require('googleapis');
 const path = require('path');
 const fs = require('fs');
-const { google } = require('googleapis');
+const crypto = require('crypto');
+const { pipeline } = require('stream');
 
-const app = express();
-app.set('trust proxy', 1);
-const PORT = process.env.PORT || 3000;
+const { createTokenCodec } = require('./lib/token');
+const { parseRange } = require('./lib/range');
 
-// ─── App Version (Cache Busting) ─────────────────────────────────────────────
-const APP_VERSION = '20260517';
+// ─── 基础配置 ────────────────────────────────────────────────────────────────
+const APP_VERSION = '20261020';
+const PORT = Number(process.env.PORT) || 3000;
+const BASE_PATH = path.join(__dirname);
+const INDEX_PATH = path.join(BASE_PATH, 'public', 'index.html');
 
-// ─── Multi-source Drive config ────────────────────────────────────────────────
-//
-// DRIVE_SOURCES 格式（JSON 数组，写在 .env 中）：
-//   DRIVE_SOURCES=[{"id":"work","name":"工作盘","keyFile":"/opt/gdlists/sa1.json","folderId":"1Abc..."},{"id":"personal","name":"个人盘","keyFile":"/opt/gdlists/sa2.json","folderId":"1Xyz..."}]
-//
-// 兼容旧配置（GOOGLE_SERVICE_ACCOUNT_JSON + ROOT_FOLDER_ID）：
-//   如果没有 DRIVE_SOURCES，自动使用旧配置作为 id="default" 的单源
-//
+// 反向代理层数：默认 1（nginx）；设为 0 表示不信任任何代理头
+const TRUST_PROXY = process.env.TRUST_PROXY === '0'
+  ? false
+  : (Number(process.env.TRUST_PROXY) || 1);
+
+// 对外访问地址（可选），用于生成分享链接；不填则用请求头推导
+const PUBLIC_URL = String(process.env.PUBLIC_URL || '').replace(/\/+$/, '');
+
+const CACHE_DIR = path.join(BASE_PATH, 'cache');
+const CACHE_META_FILE = path.join(CACHE_DIR, 'meta.json');
+const MAX_CACHE_SIZE = (Number(process.env.MAX_CACHE_SIZE_GB) || 5) * 1024 ** 3;
+const CACHE_TTL = (Number(process.env.CACHE_TTL_DAYS) || 100) * 24 * 60 * 60 * 1000;
+const CACHE_CLEAN_INTERVAL = 6 * 60 * 60 * 1000;
+
+const FILE_LIST_LIMIT = Number(process.env.FILE_LIST_LIMIT) || 5000;
+const SHARE_TTL_MS = (Number(process.env.SHARE_TTL_HOURS) || 0) * 60 * 60 * 1000;
+const SESSION_TTL_MS = (Number(process.env.SESSION_TTL_HOURS) || 24) * 60 * 60 * 1000;
+const SESSION_COOKIE = 'gdl_session';
+
+// ─── 密钥 ────────────────────────────────────────────────────────────────────
+const rawSecret = process.env.SESSION_SECRET;
+if (!rawSecret || rawSecret === 'change-this-to-a-random-secret' || rawSecret.length < 16) {
+  console.warn('[安全] SESSION_SECRET 未设置或强度不足，本次启动将使用随机密钥；重启后登录状态与分享链接会全部失效');
+}
+const SESSION_SECRET = rawSecret && rawSecret.length >= 16
+  ? rawSecret
+  : crypto.randomBytes(32).toString('hex');
+const tokens = createTokenCodec(SESSION_SECRET);
+
+// ─── 多数据源配置 ────────────────────────────────────────────────────────────
+// DRIVE_SOURCES=[{"id":"work","name":"工作盘","keyFile":"/opt/gdlists/sa1.json","folderId":"1Abc..."}]
+// 兼容旧配置：GOOGLE_SERVICE_ACCOUNT_JSON + ROOT_FOLDER_ID（作为 id=default 的单源）
+
+function normalizeSources(list) {
+  const out = [];
+  const seen = new Set();
+  (Array.isArray(list) ? list : []).forEach((raw, i) => {
+    if (!raw || typeof raw !== 'object') return;
+    const id = String(raw.id || `source${i}`).trim();
+    if (!/^[A-Za-z0-9_-]{1,32}$/.test(id)) {
+      console.warn(`[Sources] 忽略数据源 #${i + 1}：id 只能包含字母/数字/下划线/短横线，且不超过 32 位`);
+      return;
+    }
+    if (seen.has(id)) {
+      console.warn(`[Sources] 忽略重复数据源 id: ${id}`);
+      return;
+    }
+    seen.add(id);
+    out.push({
+      id,
+      name: String(raw.name || `Drive ${i + 1}`),
+      keyFile: raw.keyFile,
+      folderId: String(raw.folderId || 'root'),
+    });
+  });
+  return out;
+}
+
 let DRIVE_SOURCES = [];
 
 (function loadSources() {
   if (process.env.DRIVE_SOURCES) {
     try {
-      const parsed = JSON.parse(process.env.DRIVE_SOURCES);
-      if (Array.isArray(parsed) && parsed.length > 0) {
-        DRIVE_SOURCES = parsed.map((s, i) => ({
-          id: s.id || `source${i}`,
-          name: s.name || `Drive ${i + 1}`,
-          keyFile: s.keyFile,
-          folderId: s.folderId || 'root'
-        }));
+      DRIVE_SOURCES = normalizeSources(JSON.parse(process.env.DRIVE_SOURCES));
+      if (DRIVE_SOURCES.length > 0) {
         console.log(`[Sources] 已加载 ${DRIVE_SOURCES.length} 个 Drive 数据源`);
         return;
       }
+      console.warn('[Sources] DRIVE_SOURCES 为空或格式不合法，回退到旧单源配置');
     } catch (e) {
-      console.error('[Sources] 解析 DRIVE_SOURCES 失败:', e.message);
+      console.error('[Sources] 解析 DRIVE_SOURCES 失败（将回退旧单源配置）:', e.message);
     }
   }
-  // 兼容旧单账号配置
-  DRIVE_SOURCES = [{
+
+  DRIVE_SOURCES = normalizeSources([{
     id: 'default',
     name: 'My Drive',
     keyFile: process.env.GOOGLE_SERVICE_ACCOUNT_JSON,
-    folderId: process.env.ROOT_FOLDER_ID || 'root'
-  }];
+    folderId: process.env.ROOT_FOLDER_ID || 'root',
+  }]);
   console.log('[Sources] 使用单账号模式（兼容旧配置）');
 })();
 
-// ─── Drive Client Pool ────────────────────────────────────────────────────────
+for (const source of DRIVE_SOURCES) {
+  if (!source.keyFile) {
+    console.error(`[Sources] "${source.name}" 未配置 Service Account JSON 路径（keyFile）`);
+  } else if (!fs.existsSync(path.resolve(source.keyFile))) {
+    console.error(`[Sources] 密钥文件不存在: ${source.keyFile}`);
+  }
+}
+if (DRIVE_SOURCES.length === 0) {
+  console.error('[Sources] 没有任何可用数据源，服务退出');
+  process.exit(1);
+}
+
+// ─── Drive 客户端 ────────────────────────────────────────────────────────────
 const _driveClients = new Map();
 
-function getDriveClient(sourceId) {
-  const sourceIdStr = sourceId || DRIVE_SOURCES[0].id;
-  if (_driveClients.has(sourceIdStr)) return _driveClients.get(sourceIdStr);
+function getSource(sourceId) {
+  const id = sourceId || DRIVE_SOURCES[0].id;
+  return DRIVE_SOURCES.find(s => s.id === id) || null;
+}
 
-  const source = DRIVE_SOURCES.find(s => s.id === sourceIdStr);
-  if (!source) throw new Error(`数据源 "${sourceIdStr}" 不存在`);
+/** 从请求参数解析数据源；非法时返回 null */
+function resolveSource(rawSourceId) {
+  return getSource(typeof rawSourceId === 'string' && rawSourceId ? rawSourceId : DRIVE_SOURCES[0].id);
+}
+
+function getDriveClient(source) {
+  if (_driveClients.has(source.id)) return _driveClients.get(source.id);
   if (!source.keyFile) throw new Error(`数据源 "${source.name}" 未配置 Service Account JSON 路径`);
 
   let credentials;
   try {
-    credentials = require(path.resolve(source.keyFile));
+    credentials = JSON.parse(fs.readFileSync(path.resolve(source.keyFile), 'utf8'));
   } catch (e) {
-    throw new Error(`无法读取 Service Account 密钥文件 (${source.name}): ${source.keyFile}，错误: ${e.message}`);
+    throw new Error(`无法读取 Service Account 密钥文件 (${source.name}): ${source.keyFile} — ${e.message}`);
+  }
+  if (!credentials.client_email || !credentials.private_key) {
+    throw new Error(`Service Account 密钥文件缺少 client_email / private_key (${source.name})`);
   }
 
-  const auth = new google.auth.JWT(
-    credentials.client_email,
-    null,
-    credentials.private_key,
-    ['https://www.googleapis.com/auth/drive']
-  );
+  const auth = new google.auth.JWT({
+    email: credentials.client_email,
+    key: credentials.private_key,
+    scopes: ['https://www.googleapis.com/auth/drive.readonly'],
+  });
 
-  const driveClient = google.drive({ version: 'v3', auth, timeout: 30 * 1000 });
-  _driveClients.set(sourceIdStr, driveClient);
-  return driveClient;
+  // 元数据请求 30s 超时；媒体下载单独关闭超时（见 pipeDrive）
+  const client = google.drive({ version: 'v3', auth, timeout: 30 * 1000 });
+  _driveClients.set(source.id, client);
+  return client;
 }
 
-function getSourceRootFolder(sourceId) {
-  const source = DRIVE_SOURCES.find(s => s.id === (sourceId || DRIVE_SOURCES[0].id));
-  return source ? source.folderId : 'root';
+async function getMeta(drive, fileId, fields = 'name,mimeType,size') {
+  const res = await drive.files.get({ fileId, fields, supportsAllDrives: true });
+  return res.data;
 }
 
-// ─── File Cache ────────────────────────────────────────────────────────────────
-const CACHE_DIR = path.join(__dirname, 'cache');
-const CACHE_META_FILE = path.join(CACHE_DIR, 'meta.json');
-const MAX_CACHE_SIZE = 5 * 1024 * 1024 * 1024; // 5 GB
-const CACHE_TTL = 100 * 24 * 60 * 60 * 1000; // 100 天
-
-// 确保缓存目录存在
-if (!fs.existsSync(CACHE_DIR)) {
-  fs.mkdirSync(CACHE_DIR, { recursive: true });
+// ─── Token / 会话 ────────────────────────────────────────────────────────────
+function signFileToken(fileId, sourceId) {
+  const payload = { typ: 'file', id: fileId, sourceId };
+  if (SHARE_TTL_MS > 0) payload.exp = Date.now() + SHARE_TTL_MS;
+  return tokens.sign(payload);
 }
 
-// 缓存索引：`${sourceId}:${fileId}` -> { path, name, size, mimeType, cachedAt }
-const cacheIndex = new Map();
+function verifyFileToken(raw) {
+  const payload = tokens.verify(raw);
+  if (!payload || payload.typ !== 'file' || typeof payload.id !== 'string' || !payload.id) return null;
+  return payload;
+}
+
+function getSession(req) {
+  const raw = req.cookies && req.cookies[SESSION_COOKIE];
+  if (!raw) return null;
+  const payload = tokens.verify(raw);
+  if (!payload || payload.typ !== 'session' || typeof payload.u !== 'string') return null;
+  return payload;
+}
+
+function issueSession(req, res, username) {
+  res.cookie(SESSION_COOKIE, tokens.sign({
+    typ: 'session',
+    u: username,
+    exp: Date.now() + SESSION_TTL_MS,
+  }), {
+    httpOnly: true,
+    sameSite: 'lax',
+    secure: req.secure,
+    maxAge: SESSION_TTL_MS,
+    path: '/',
+  });
+}
+
+function clearSession(req, res) {
+  res.clearCookie(SESSION_COOKIE, {
+    httpOnly: true,
+    sameSite: 'lax',
+    secure: req.secure,
+    path: '/',
+  });
+}
+
+function requireLogin(req, res, next) {
+  const session = getSession(req);
+  if (!session) return res.status(401).json({ error: '登录已过期，请重新登录' });
+  req.user = session.u;
+  next();
+}
+
+// ─── 文件缓存 ────────────────────────────────────────────────────────────────
+const EXPORT_TYPES = {
+  'application/vnd.google-apps.document': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  'application/vnd.google-apps.spreadsheet': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  'application/vnd.google-apps.presentation': 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+};
+
+const cacheIndex = new Map(); // `${sourceId}:${fileId}` -> { path, name, mimeType, size, cachedAt }
+const cacheJobs = new Map();  // `${sourceId}:${fileId}` -> { status, received, total, error, startedAt }
+
+fs.mkdirSync(CACHE_DIR, { recursive: true });
+
+const cacheKey = (sourceId, fileId) => `${sourceId}:${fileId}`;
+
+function writeFileAtomic(file, data) {
+  const tmp = `${file}.${process.pid}.tmp`;
+  fs.writeFileSync(tmp, data);
+  fs.renameSync(tmp, file);
+}
+
+function saveCacheIndex() {
+  try {
+    writeFileAtomic(CACHE_META_FILE, JSON.stringify(Object.fromEntries(cacheIndex), null, 2));
+  } catch (e) {
+    console.error('[Cache] 保存元数据失败:', e.message);
+  }
+}
 
 function loadCacheIndex() {
   try {
     if (fs.existsSync(CACHE_META_FILE)) {
       const meta = JSON.parse(fs.readFileSync(CACHE_META_FILE, 'utf8'));
       for (const [key, info] of Object.entries(meta)) {
-        if (fs.existsSync(info.path)) {
-          cacheIndex.set(key, info);
-        }
+        if (info && typeof info.path === 'string' && fs.existsSync(info.path)) cacheIndex.set(key, info);
       }
     }
     console.log(`[Cache] 已加载 ${cacheIndex.size} 个缓存文件`);
@@ -120,531 +253,638 @@ function loadCacheIndex() {
   }
 }
 
-function saveCacheIndex() {
+function removeCacheFile(info) {
+  if (!info || !info.path) return;
   try {
-    const obj = Object.fromEntries(cacheIndex);
-    fs.writeFileSync(CACHE_META_FILE, JSON.stringify(obj, null, 2));
+    fs.rmSync(info.path, { force: true });
   } catch (e) {
-    console.error('[Cache] 保存元数据失败:', e.message);
+    console.error('[Cache] 删除文件失败:', e.message);
   }
+}
+
+function totalCacheSize() {
+  let total = 0;
+  for (const info of cacheIndex.values()) total += Number(info.size) || 0;
+  return total;
 }
 
 function cleanCache() {
   try {
     const now = Date.now();
-    let totalSize = 0;
-    const toDelete = [];
 
-    for (const [key, info] of cacheIndex) {
-      totalSize += info.size;
-      if (now - info.cachedAt > CACHE_TTL) {
-        toDelete.push(key);
+    // 1. 清理条目：文件丢失 / 已过期
+    for (const [key, info] of [...cacheIndex]) {
+      if (!fs.existsSync(info.path)) {
+        cacheIndex.delete(key);
+        continue;
+      }
+      if (now - (Number(info.cachedAt) || 0) > CACHE_TTL) {
+        removeCacheFile(info);
+        cacheIndex.delete(key);
+        console.log(`[Cache] 删除过期文件: ${info.name}`);
       }
     }
 
-    for (const key of toDelete) {
-      const info = cacheIndex.get(key);
-      if (fs.existsSync(info.path)) fs.unlinkSync(info.path);
-      cacheIndex.delete(key);
-      console.log(`[Cache] 删除过期文件: ${info.name}`);
-    }
-    saveCacheIndex();
-
-    while (totalSize > MAX_CACHE_SIZE && cacheIndex.size > 0) {
-      let oldest = null;
+    // 2. 按容量淘汰最旧的（此处才统计体积，避免把已删文件算进去）
+    let total = totalCacheSize();
+    while (total > MAX_CACHE_SIZE && cacheIndex.size > 0) {
+      let oldestKey = null;
       let oldestTime = Infinity;
       for (const [key, info] of cacheIndex) {
-        if (info.cachedAt < oldestTime) {
-          oldestTime = info.cachedAt;
-          oldest = key;
-        }
+        const t = Number(info.cachedAt) || 0;
+        if (t < oldestTime) { oldestTime = t; oldestKey = key; }
       }
-      if (oldest) {
-        const info = cacheIndex.get(oldest);
-        totalSize -= info.size;
-        if (fs.existsSync(info.path)) fs.unlinkSync(info.path);
-        cacheIndex.delete(oldest);
-        console.log(`[Cache] 清理空间，删除: ${info.name}`);
+      if (!oldestKey) break;
+      const info = cacheIndex.get(oldestKey);
+      total -= Number(info.size) || 0;
+      removeCacheFile(info);
+      cacheIndex.delete(oldestKey);
+      console.log(`[Cache] 超出容量上限，删除: ${info.name}`);
+    }
+
+    // 3. 清理孤立文件与残留的 .part（只处理明确失效的）
+    const referenced = new Set([...cacheIndex.values()].map(i => i.path));
+    for (const name of fs.readdirSync(CACHE_DIR)) {
+      const full = path.join(CACHE_DIR, name);
+      if (full === CACHE_META_FILE || referenced.has(full)) continue;
+      let stat;
+      try { stat = fs.statSync(full); } catch { continue; }
+      if (!stat.isFile()) continue;
+      const age = now - stat.mtimeMs;
+      if (name.endsWith('.part') ? age > 6 * 60 * 60 * 1000 : age > 60 * 60 * 1000) {
+        fs.rmSync(full, { force: true });
+        console.log(`[Cache] 清理孤立文件: ${name}`);
       }
     }
+
+    // 4. 清理过期的失败任务
+    for (const [key, job] of [...cacheJobs]) {
+      if (job.status !== 'running' && now - (job.finishedAt || job.startedAt) > 10 * 60 * 1000) {
+        cacheJobs.delete(key);
+      }
+    }
+
     saveCacheIndex();
   } catch (e) {
     console.error('[Cache] 清理失败:', e.message);
   }
 }
 
-async function cacheFile(sourceId, fileId) {
-  const cacheKey = `${sourceId}:${fileId}`;
-  if (cacheIndex.has(cacheKey)) return cacheIndex.get(cacheKey);
+function cacheFlags(fileId, sourceId) {
+  const key = cacheKey(sourceId, fileId);
+  const info = cacheIndex.get(key);
+  if (info) return { cached: true, cachePercent: 100 };
+  const job = cacheJobs.get(key);
+  if (job && job.status === 'running') {
+    return {
+      cached: false,
+      cachePercent: job.total ? Math.min(99, Math.floor((job.received / job.total) * 100)) : null,
+    };
+  }
+  return { cached: false, cachePercent: null };
+}
 
-  const drive = getDriveClient(sourceId);
-  const meta = await drive.files.get({ fileId, fields: 'name,mimeType,size' });
-  const { name, mimeType } = meta.data;
-  const safeName = name.replace(/[<>:"/\\|?*]/g, '_');
-  const cachedFileName = `${sourceId}_${fileId}_${encodeURIComponent(safeName)}`;
-  const cachedPath = path.join(CACHE_DIR, cachedFileName);
+function safeFileBase(name) {
+  const cleaned = String(name)
+    .replace(/[<>:"/\\|?*\x00-\x1f]/g, '_')
+    .replace(/\s+/g, ' ')
+    .trim();
+  return encodeURIComponent((cleaned || 'file').slice(0, 60));
+}
 
-  console.log(`[Cache] 下载中: ${name} (${sourceId})`);
+async function downloadToCache(source, fileId, job) {
+  const drive = getDriveClient(source);
+  const meta = await getMeta(drive, fileId);
+  const name = meta.name || fileId;
+  const mimeType = meta.mimeType || 'application/octet-stream';
 
-  const response = await drive.files.get(
-    { fileId, alt: 'media' },
-    { responseType: 'stream' }
+  if (EXPORT_TYPES[mimeType]) {
+    throw new Error('Google 原生文档不支持缓存，请先导出为 Office/PDF 格式');
+  }
+
+  const declaredSize = meta.size ? Number(meta.size) : 0;
+  if (declaredSize > MAX_CACHE_SIZE) {
+    throw new Error(`文件大小超过缓存上限 (${(MAX_CACHE_SIZE / 1024 ** 3).toFixed(1)} GB)`);
+  }
+  job.total = declaredSize;
+
+  const hash = crypto.createHash('sha1').update(fileId).digest('hex').slice(0, 10);
+  const finalPath = path.join(CACHE_DIR, `${source.id}_${hash}_${safeFileBase(name)}`);
+  const tmpPath = `${finalPath}.part`;
+
+  const upstream = await drive.files.get(
+    { fileId, alt: 'media', supportsAllDrives: true },
+    { responseType: 'stream', timeout: 0 }
   );
 
-  return new Promise((resolve, reject) => {
-    const writeStream = fs.createWriteStream(cachedPath);
-    let size = 0;
-    response.data.on('data', (chunk) => { size += chunk.length; });
-    response.data.pipe(writeStream);
-    writeStream.on('finish', () => {
-      const info = { path: cachedPath, name, mimeType, size, cachedAt: Date.now() };
-      cacheIndex.set(cacheKey, info);
-      saveCacheIndex();
-      console.log(`[Cache] 完成: ${name} (${(size / 1024 / 1024).toFixed(2)} MB)`);
-      resolve(info);
+  let received = 0;
+  try {
+    await new Promise((resolve, reject) => {
+      const out = fs.createWriteStream(tmpPath);
+      upstream.data.on('data', (chunk) => {
+        received += chunk.length;
+        job.received = received;
+      });
+      pipeline(upstream.data, out, (err) => (err ? reject(err) : resolve()));
     });
-    writeStream.on('error', reject);
-    response.data.on('error', reject);
+
+    if (declaredSize && received !== declaredSize) {
+      console.warn(`[Cache] 大小不一致（声明 ${declaredSize}，实际 ${received}）: ${name}`);
+    }
+    fs.renameSync(tmpPath, finalPath);
+  } catch (err) {
+    fs.rm(tmpPath, { force: true }, () => {});
+    throw err;
+  }
+
+  const info = { path: finalPath, name, mimeType, size: received, cachedAt: Date.now() };
+  cacheIndex.set(cacheKey(source.id, fileId), info);
+  saveCacheIndex();
+  console.log(`[Cache] 完成: ${name} (${(received / 1024 / 1024).toFixed(2)} MB)`);
+  return info;
+}
+
+function startCacheJob(source, fileId) {
+  const key = cacheKey(source.id, fileId);
+  const info = cacheIndex.get(key);
+  if (info && fs.existsSync(info.path)) return { started: false };
+  const running = cacheJobs.get(key);
+  if (running && running.status === 'running') return { started: false };
+
+  const job = { status: 'running', received: 0, total: 0, error: null, startedAt: Date.now() };
+  cacheJobs.set(key, job);
+  console.log(`[Cache] 开始缓存: ${fileId} (${source.id})`);
+
+  downloadToCache(source, fileId, job)
+    .then(() => { cacheJobs.delete(key); })
+    .catch((err) => {
+      job.status = 'error';
+      job.error = err.message;
+      job.finishedAt = Date.now();
+      console.error(`[Cache] 缓存失败 (${source.id}:${fileId}):`, err.message);
+    });
+
+  return { started: true };
+}
+
+function cacheStatus(source, fileId) {
+  const key = cacheKey(source.id, fileId);
+  const info = cacheIndex.get(key);
+  if (info && fs.existsSync(info.path)) {
+    return { cached: true, status: 'done', size: info.size, cachedAt: info.cachedAt, percent: 100 };
+  }
+  const job = cacheJobs.get(key);
+  if (!job) return { cached: false, status: 'idle', percent: null };
+  const percent = job.total ? Math.min(100, Math.round((job.received / job.total) * 100)) : null;
+  return {
+    cached: false,
+    status: job.status,
+    received: job.received,
+    total: job.total || null,
+    percent,
+    error: job.error,
+  };
+}
+
+// ─── 流式转发 ────────────────────────────────────────────────────────────────
+function contentDisposition(type, filename) {
+  const name = String(filename || 'file');
+  const fallback = name.replace(/[^\x20-\x7e]/g, '_').replace(/["\\]/g, '_') || 'file';
+  return `${type}; filename="${fallback}"; filename*=UTF-8''${encodeURIComponent(name)}`;
+}
+
+function pipeToResponse(upstream, res, label) {
+  pipeline(upstream, res, (err) => {
+    if (!err) return;
+    if (err.code === 'ERR_STREAM_PREMATURE_CLOSE' || err.code === 'EPIPE') return; // 客户端主动断开
+    console.error(`[Stream] ${label} 传输中断:`, err.message);
   });
 }
 
-// ─── Preview Stream (直接流式，不缓存) ────────────────────────────────────
-// token 中包含 sourceId（可选，默认第一个源）
-app.get('/pv2/:token', async (req, res) => {
-  let payload;
-  try {
-    payload = JSON.parse(Buffer.from(req.params.token, 'base64url').toString());
-  } catch {
-    return res.status(400).json({ error: 'Invalid token' });
-  }
+async function pipeDrive(req, res, { fileId, source, disposition }) {
+  const drive = getDriveClient(source);
+  const meta = await getMeta(drive, fileId);
 
-  const { id: fileId, sourceId } = payload;
+  const name = meta.name || fileId;
+  const isExport = !!EXPORT_TYPES[meta.mimeType];
+  const mimeType = isExport ? EXPORT_TYPES[meta.mimeType] : (meta.mimeType || 'application/octet-stream');
+  const size = !isExport && meta.size ? Number(meta.size) : null;
 
-  try {
-    const drive = getDriveClient(sourceId);
-    const meta = await drive.files.get({ fileId, fields: 'name,mimeType,size' });
-    const { name, mimeType, size } = meta.data;
+  res.setHeader('Content-Type', mimeType);
+  res.setHeader('Content-Disposition', contentDisposition(disposition, name));
+  res.setHeader('Cache-Control', 'private, max-age=0, must-revalidate');
+  if (size) res.setHeader('Accept-Ranges', 'bytes');
 
-    res.setHeader('Content-Type', mimeType || 'application/pdf');
-    res.setHeader('Accept-Ranges', 'bytes');
-    res.setHeader('Content-Disposition', `inline; filename*=UTF-8''${encodeURIComponent(name)}`);
-
-    const range = req.headers['range'];
-    if (range) {
-      const parts = range.replace(/bytes=/, '').split('-');
-      const start = parseInt(parts[0], 10);
-      const end = parts[1] ? parseInt(parts[1], 10) : size - 1;
-      const chunkSize = end - start + 1;
-      res.setHeader('Content-Range', `bytes ${start}-${end}/${size}`);
-      res.setHeader('Content-Length', chunkSize);
-      res.status(206);
-      const dlRes = await drive.files.get(
-        { fileId, alt: 'media' },
-        { responseType: 'stream', headers: { Range: `bytes=${start}-${end}` } }
-      );
-      dlRes.data.pipe(res);
-    } else {
-      const dlRes = await drive.files.get(
-        { fileId, alt: 'media' },
-        { responseType: 'stream' }
-      );
-      dlRes.data.pipe(res);
+  let range = null;
+  if (size) {
+    range = parseRange(req.headers.range, size);
+    if (range === 'invalid') {
+      res.setHeader('Content-Range', `bytes */${size}`);
+      return res.status(416).json({ error: '请求的 Range 无效' });
     }
-  } catch (err) {
-    console.error('[Preview] 流式预览失败:', err.message);
-    if (!res.headersSent) res.status(500).json({ error: err.message });
   }
+
+  if (range) {
+    res.status(206);
+    res.setHeader('Content-Range', `bytes ${range.start}-${range.end}/${size}`);
+    res.setHeader('Content-Length', range.end - range.start + 1);
+  } else if (size) {
+    res.setHeader('Content-Length', size);
+  }
+
+  const options = { responseType: 'stream', timeout: 0 };
+  if (range) options.headers = { Range: `bytes=${range.start}-${range.end}` };
+
+  const upstream = isExport
+    ? await drive.files.export({ fileId, mimeType }, { responseType: 'stream', timeout: 0 })
+    : await drive.files.get({ fileId, alt: 'media', supportsAllDrives: true }, options);
+
+  pipeToResponse(upstream.data, res, `${disposition} ${fileId}`);
+}
+
+function sendDriveError(res, err) {
+  const rawCode = err && (err.code || (err.response && err.response.status));
+  const code = Number(rawCode);
+  const status = code === 404 ? 404 : (code === 403 ? 403 : 502);
+  const message = status === 404
+    ? '文件不存在或无权访问'
+    : status === 403
+      ? '无权访问该文件'
+      : `读取文件失败: ${err && err.message ? err.message : '未知错误'}`;
+  console.error(`[Drive] ${message}`);
+  if (!res.headersSent) res.status(status).json({ error: message });
+  else res.end();
+}
+
+function baseUrl(req) {
+  return PUBLIC_URL || `${req.protocol}://${req.get('host')}`;
+}
+
+// ─── Express 应用 ────────────────────────────────────────────────────────────
+const app = express();
+app.disable('x-powered-by');
+app.set('trust proxy', TRUST_PROXY);
+
+app.use((req, res, next) => {
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('X-Frame-Options', 'SAMEORIGIN');
+  res.setHeader('Referrer-Policy', 'same-origin');
+  res.setHeader('Permissions-Policy', 'geolocation=(), microphone=(), camera=()');
+  res.setHeader('Content-Security-Policy', [
+    "default-src 'self'",
+    "script-src 'self' 'unsafe-inline' 'unsafe-eval' https://cdnjs.cloudflare.com https://cdn.sheetjs.com",
+    "style-src 'self' 'unsafe-inline'",
+    "img-src 'self' data: blob:",
+    "media-src 'self' blob:",
+    "font-src 'self' data:",
+    "connect-src 'self'",
+    "worker-src 'self' blob: https://cdnjs.cloudflare.com",
+    "frame-ancestors 'self'",
+    "base-uri 'self'",
+    "form-action 'self'",
+  ].join('; '));
+  if (req.secure) res.setHeader('Strict-Transport-Security', 'max-age=15552000; includeSubDomains');
+  next();
 });
 
-// ─── Security: Login Rate Limiter ────────────────────────────────────────────
+app.use(express.json({ limit: '100kb' }));
+app.use(express.urlencoded({ extended: false, limit: '100kb' }));
+app.use(cookieParser());
+
+// ─── 页面 ────────────────────────────────────────────────────────────────────
+let indexHtml = null;
+
+function renderIndex() {
+  if (indexHtml) return indexHtml;
+  const template = fs.readFileSync(INDEX_PATH, 'utf8');
+  const sourcesJson = JSON.stringify(DRIVE_SOURCES.map(s => ({ id: s.id, name: s.name })));
+  indexHtml = template
+    .replace(/var APP_VERSION = '[^']*';/, `var APP_VERSION = '${APP_VERSION}';`)
+    .replace(/var DRIVE_SOURCES = \[\];/, `var DRIVE_SOURCES = ${sourcesJson};`);
+  return indexHtml;
+}
+
+function serveIndex(req, res) {
+  try {
+    res.setHeader('Cache-Control', 'no-store');
+    res.type('html').send(renderIndex());
+  } catch (e) {
+    console.error('[Index] 读取模板失败:', e.message);
+    res.status(500).type('text').send('页面加载失败');
+  }
+}
+
+app.get('/', serveIndex);
+app.get('/index.html', serveIndex);
+
+// ─── 登录限流 ────────────────────────────────────────────────────────────────
 const loginLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
-  max: 10,
+  limit: 10,
+  skipSuccessfulRequests: true,
   message: { error: '登录尝试过于频繁，请 15 分钟后再试' },
   standardHeaders: true,
   legacyHeaders: false,
 });
 
-// ─── Middleware ────────────────────────────────────────────────────────────
-app.use(express.json());
-app.use(express.urlencoded({ extended: false }));
-app.use(cookieParser());
-app.use(session({
-  secret: process.env.SESSION_SECRET || 'change-me-in-production',
-  resave: false,
-  saveUninitialized: false,
-  cookie: { httpOnly: true, maxAge: 24 * 60 * 60 * 1000 }
-}));
-
-// 根路径：注入版本号 + 多源配置（仅暴露 id/name，不暴露密钥路径）
-app.get('/', (req, res) => {
-  const htmlPath = path.join(__dirname, 'public', 'index.html');
-  fs.readFile(htmlPath, 'utf8', (err, content) => {
-    if (err) return res.status(500).send('Error loading index');
-    const sourcesForClient = JSON.stringify(
-      DRIVE_SOURCES.map(s => ({ id: s.id, name: s.name }))
-    );
-    let updated = content.replace(
-      /var APP_VERSION = '[^']*';/,
-      `var APP_VERSION = '${APP_VERSION}';`
-    );
-    updated = updated.replace(
-      /var DRIVE_SOURCES = \[\];/,
-      `var DRIVE_SOURCES = ${sourcesForClient};`
-    );
-    res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
-    res.setHeader('Pragma', 'no-cache');
-    res.setHeader('Expires', '0');
-    res.type('html').send(updated);
-  });
-});
-
-app.use(express.static(path.join(__dirname, 'public')));
-
-// ─── Auth Guard ───────────────────────────────────────────────────────────
-function requireLogin(req, res, next) {
-  if (req.session && req.session.authenticated) return next();
-  res.status(401).json({ error: 'Unauthorized' });
-}
-
-// ─── Routes ───────────────────────────────────────────────────────────────
-
-// GET /api/sources — 返回可用数据源列表
-app.get('/api/sources', requireLogin, (req, res) => {
-  res.json({
-    sources: DRIVE_SOURCES.map(s => ({ id: s.id, name: s.name, folderId: s.folderId }))
-  });
-});
-
-// Login
+// ─── 认证 ────────────────────────────────────────────────────────────────────
 app.post('/api/login', loginLimiter, async (req, res) => {
-  const { username, password } = req.body;
+  const { username, password } = req.body || {};
   const validUser = process.env.ADMIN_USERNAME || 'admin';
   const validHash = process.env.ADMIN_PASSWORD_HASH;
-  if (!validHash) {
-    return res.status(500).json({ error: 'Server not configured (missing ADMIN_PASSWORD_HASH)' });
+
+  if (!validHash) return res.status(500).json({ error: '服务未配置（缺少 ADMIN_PASSWORD_HASH）' });
+  if (typeof username !== 'string' || typeof password !== 'string' || !username || !password) {
+    return res.status(400).json({ error: '请输入用户名和密码' });
   }
-  const userOk = username === validUser;
-  const passOk = await bcrypt.compare(password, validHash);
-  if (userOk && passOk) {
-    req.session.authenticated = true;
-    req.session.username = username;
-    return res.json({ ok: true });
+
+  let passOk = false;
+  try {
+    passOk = await bcrypt.compare(password, validHash);
+  } catch {
+    passOk = false;
   }
-  res.status(401).json({ error: 'Invalid username or password' });
+
+  if (username === validUser && passOk) {
+    issueSession(req, res, username); // 登录即签发新 cookie，避免会话固定
+    return res.json({ ok: true, username });
+  }
+  res.status(401).json({ error: '用户名或密码错误' });
 });
 
-// Logout
 app.post('/api/logout', (req, res) => {
-  req.session.destroy(() => res.json({ ok: true }));
+  clearSession(req, res);
+  res.json({ ok: true });
 });
 
-// Auth status
 app.get('/api/auth', (req, res) => {
-  res.json({ authenticated: !!(req.session && req.session.authenticated) });
+  const session = getSession(req);
+  res.json({ authenticated: !!session, username: session ? session.u : null });
 });
 
-// List files in a folder
-// GET /api/files?folderId=xxx&sourceId=yyy
+// ─── 健康检查（无需登录，不含敏感信息）───────────────────────────────────────
+app.get('/api/health', (req, res) => {
+  res.json({
+    ok: true,
+    version: APP_VERSION,
+    uptime: Math.round(process.uptime()),
+    sources: DRIVE_SOURCES.length,
+    cache: { files: cacheIndex.size, bytes: totalCacheSize() },
+    activeJobs: [...cacheJobs.values()].filter(j => j.status === 'running').length,
+  });
+});
+
+// ─── 数据源 ──────────────────────────────────────────────────────────────────
+app.get('/api/sources', requireLogin, (req, res) => {
+  // 只暴露 id / name，不下发 folderId
+  res.json({ sources: DRIVE_SOURCES.map(s => ({ id: s.id, name: s.name })) });
+});
+
+// ─── 文件列表 ────────────────────────────────────────────────────────────────
 app.get('/api/files', requireLogin, async (req, res) => {
-  const sourceId = req.query.sourceId || DRIVE_SOURCES[0].id;
-  const rootFolderId = getSourceRootFolder(sourceId);
-  const folderId = req.query.folderId || rootFolderId;
+  const source = resolveSource(req.query.sourceId);
+  if (!source) return res.status(400).json({ error: '数据源不存在' });
+
+  const folderId = String(req.query.folderId || source.folderId).replace(/[^A-Za-z0-9_-]/g, '') || source.folderId;
 
   try {
-    const drive = getDriveClient(sourceId);
-    const response = await drive.files.list({
-      q: `'${folderId}' in parents and trashed = false`,
-      fields: 'files(id,name,mimeType,size,modifiedTime,parents)',
-      orderBy: 'folder,name',
-      pageSize: 1000
-    });
-    res.json({ files: response.data.files || [], sourceId });
+    const drive = getDriveClient(source);
+    const files = [];
+    let pageToken;
+    let truncated = false;
+
+    do {
+      const response = await drive.files.list({
+        q: `'${folderId}' in parents and trashed = false`,
+        fields: 'nextPageToken, files(id,name,mimeType,size,modifiedTime,parents)',
+        orderBy: 'folder,name',
+        pageSize: 1000,
+        pageToken,
+        supportsAllDrives: true,
+        includeItemsFromAllDrives: true,
+      });
+
+      for (const file of response.data.files || []) {
+        if (files.length >= FILE_LIST_LIMIT) { truncated = true; break; }
+        files.push({ ...file, ...cacheFlags(file.id, source.id) });
+      }
+
+      pageToken = response.data.nextPageToken;
+    } while (pageToken && !truncated);
+
+    if (truncated) console.warn(`[Drive] 文件夹 ${folderId} 文件数超过 ${FILE_LIST_LIMIT}，已截断`);
+    res.json({ files, sourceId: source.id, truncated, limit: FILE_LIST_LIMIT });
   } catch (err) {
-    console.error('[Drive] 文件列表错误:', err.message);
-    res.status(500).json({ error: err.message });
+    sendDriveError(res, err);
   }
 });
 
-// Get folder breadcrumb path
-// GET /api/path?folderId=xxx&sourceId=yyy
+// ─── 面包屑 ──────────────────────────────────────────────────────────────────
 app.get('/api/path', requireLogin, async (req, res) => {
-  const sourceId = req.query.sourceId || DRIVE_SOURCES[0].id;
-  const rootFolderId = getSourceRootFolder(sourceId);
-  const folderId = req.query.folderId || rootFolderId;
+  const source = resolveSource(req.query.sourceId);
+  if (!source) return res.status(400).json({ error: '数据源不存在' });
 
-  if (folderId === rootFolderId) {
-    try {
-      const drive = getDriveClient(sourceId);
-      if (rootFolderId === 'root') {
-        const srcName = DRIVE_SOURCES.find(s => s.id === sourceId)?.name || 'My Drive';
-        return res.json({ path: [{ id: rootFolderId, name: srcName }] });
-      }
-      const meta = await drive.files.get({ fileId: rootFolderId, fields: 'id,name' });
-      return res.json({ path: [{ id: rootFolderId, name: meta.data.name }] });
-    } catch {
-      return res.json({ path: [{ id: rootFolderId, name: 'My Drive' }] });
-    }
-  }
+  const rootId = source.folderId;
+  const folderId = String(req.query.folderId || rootId).replace(/[^A-Za-z0-9_-]/g, '') || rootId;
 
   try {
-    const drive = getDriveClient(sourceId);
+    const drive = getDriveClient(source);
     const chain = [];
     let current = folderId;
-    while (current && current !== rootFolderId) {
-      const meta = await drive.files.get({ fileId: current, fields: 'id,name,parents' });
-      chain.unshift({ id: meta.data.id, name: meta.data.name });
-      current = meta.data.parents ? meta.data.parents[0] : null;
+    let depth = 0;
+
+    while (current && current !== rootId && depth < 50) {
+      const meta = await getMeta(drive, current, 'id,name,parents');
+      chain.unshift({ id: meta.id, name: meta.name });
+      current = meta.parents && meta.parents[0];
+      depth += 1;
     }
-    try {
-      const srcName = DRIVE_SOURCES.find(s => s.id === sourceId)?.name || 'My Drive';
-      const rootName = rootFolderId === 'root' ? srcName
-        : (await drive.files.get({ fileId: rootFolderId, fields: 'name' })).data.name;
-      chain.unshift({ id: rootFolderId, name: rootName });
-    } catch {
-      chain.unshift({ id: rootFolderId, name: 'My Drive' });
+
+    let rootName;
+    if (rootId === 'root') {
+      rootName = source.name;
+    } else {
+      try {
+        rootName = (await getMeta(drive, rootId, 'name')).name;
+      } catch {
+        rootName = source.name;
+      }
     }
+    chain.unshift({ id: rootId, name: rootName });
+
     res.json({ path: chain });
   } catch (err) {
-    console.error('[Drive] 路径错误:', err.message);
-    res.status(500).json({ error: err.message });
+    sendDriveError(res, err);
   }
 });
 
-// Generate a direct share link
-// GET /api/link/:fileId?sourceId=yyy
+// ─── 分享链接 ────────────────────────────────────────────────────────────────
 app.get('/api/link/:fileId', requireLogin, async (req, res) => {
-  const { fileId } = req.params;
-  const sourceId = req.query.sourceId || DRIVE_SOURCES[0].id;
-  try {
-    const drive = getDriveClient(sourceId);
-    const meta = await drive.files.get({ fileId, fields: 'name,size' });
-    const token = Buffer.from(JSON.stringify({ id: fileId, sourceId })).toString('base64url');
-    const host = `${req.protocol}://${req.get('host')}`;
-    res.json({ url: `${host}/dl/${token}`, name: meta.data.name, size: meta.data.size });
-  } catch (err) {
-    console.error('[Link] 生成链接失败:', err.message);
-    res.status(500).json({ error: err.message });
-  }
-});
+  const source = resolveSource(req.query.sourceId);
+  if (!source) return res.status(400).json({ error: '数据源不存在' });
 
-// Cache file to server
-// GET /api/cache/:fileId?sourceId=yyy
-app.get('/api/cache/:fileId', requireLogin, async (req, res) => {
-  const { fileId } = req.params;
-  const sourceId = req.query.sourceId || DRIVE_SOURCES[0].id;
   try {
-    const info = await cacheFile(sourceId, fileId);
-    const token = Buffer.from(JSON.stringify({ fileId, sourceId, name: info.name, cached: true })).toString('base64url');
-    const host = `${req.protocol}://${req.get('host')}`;
+    const drive = getDriveClient(source);
+    const meta = await getMeta(drive, req.params.fileId, 'name,size,mimeType');
     res.json({
-      status: 'cached',
-      url: `${host}/cache/${token}`,
-      name: info.name,
-      size: info.size,
-      message: `缓存完成 (${(info.size / 1024 / 1024).toFixed(2)} MB)`
+      url: `${baseUrl(req)}/dl/${signFileToken(req.params.fileId, source.id)}`,
+      name: meta.name,
+      size: meta.size || 0,
+      mimeType: meta.mimeType,
     });
   } catch (err) {
-    console.error('[Cache] 缓存失败:', err.message);
-    res.status(500).json({ status: 'error', error: '缓存失败: ' + err.message });
+    sendDriveError(res, err);
   }
 });
 
-// Cache status
-// GET /api/cache-status/:fileId?sourceId=yyy
+// ─── 缓存：启动任务（不阻塞请求）─────────────────────────────────────────────
+function handleStartCache(req, res) {
+  const source = resolveSource(req.query.sourceId);
+  if (!source) return res.status(400).json({ error: '数据源不存在' });
+
+  try {
+    const { started } = startCacheJob(source, req.params.fileId);
+    res.json({ ok: true, started, ...cacheStatus(source, req.params.fileId) });
+  } catch (err) {
+    res.status(500).json({ error: `缓存失败: ${err.message}` });
+  }
+}
+
+app.post('/api/cache/:fileId', requireLogin, handleStartCache);
+app.get('/api/cache/:fileId', requireLogin, handleStartCache);  // 兼容旧前端（返回任务状态）
+app.get('/api/share/:fileId', requireLogin, handleStartCache);  // 旧接口：同样触发后台缓存任务
+
 app.get('/api/cache-status/:fileId', requireLogin, (req, res) => {
-  const { fileId } = req.params;
-  const sourceId = req.query.sourceId || DRIVE_SOURCES[0].id;
-  const cacheKey = `${sourceId}:${fileId}`;
-  if (cacheIndex.has(cacheKey)) {
-    const info = cacheIndex.get(cacheKey);
-    res.json({ cached: true, size: info.size, cachedAt: info.cachedAt });
-  } else {
-    res.json({ cached: false });
-  }
+  const source = resolveSource(req.query.sourceId);
+  if (!source) return res.status(400).json({ error: '数据源不存在' });
+  res.json(cacheStatus(source, req.params.fileId));
 });
 
-// Share (legacy, keeps backward compat)
-// GET /api/share/:fileId?sourceId=yyy
-app.get('/api/share/:fileId', requireLogin, async (req, res) => {
-  const { fileId } = req.params;
-  const sourceId = req.query.sourceId || DRIVE_SOURCES[0].id;
-  const cacheKey = `${sourceId}:${fileId}`;
-
-  if (cacheIndex.has(cacheKey)) {
-    const info = cacheIndex.get(cacheKey);
-    const token = Buffer.from(JSON.stringify({ fileId, sourceId, name: info.name, cached: true })).toString('base64url');
-    const host = `${req.protocol}://${req.get('host')}`;
-    return res.json({
-      status: 'cached',
-      url: `${host}/cache/${token}`,
-      name: info.name,
-      size: info.size,
-      message: '文件已在缓存中，可直接下载'
-    });
-  }
+// ─── 预览 ────────────────────────────────────────────────────────────────────
+app.get('/api/preview/:fileId', requireLogin, async (req, res) => {
+  const source = resolveSource(req.query.sourceId);
+  if (!source) return res.status(400).json({ error: '数据源不存在' });
 
   try {
-    const info = await cacheFile(sourceId, fileId);
-    const token = Buffer.from(JSON.stringify({ fileId, sourceId, name: info.name, cached: true })).toString('base64url');
-    const host = `${req.protocol}://${req.get('host')}`;
+    const drive = getDriveClient(source);
+    const meta = await getMeta(drive, req.params.fileId, 'name,size,mimeType');
+    const token = signFileToken(req.params.fileId, source.id);
     res.json({
-      status: 'cached',
-      url: `${host}/cache/${token}`,
-      name: info.name,
-      size: info.size,
-      message: `文件已缓存 (${(info.size / 1024 / 1024).toFixed(2)} MB)`
+      token,
+      url: `${baseUrl(req)}/pv2/${token}`,
+      name: meta.name,
+      size: Number(meta.size) || 0,
+      mimeType: meta.mimeType,
     });
   } catch (err) {
-    console.error('[Cache] 缓存失败:', err.message);
-    res.status(500).json({ status: 'error', error: '文件缓存失败: ' + err.message });
+    sendDriveError(res, err);
   }
 });
 
-// Serve cached file
-app.get('/cache/:token', async (req, res) => {
-  let payload;
-  try {
-    payload = JSON.parse(Buffer.from(req.params.token, 'base64url').toString());
-  } catch {
-    return res.status(400).send('Invalid token');
-  }
-
-  const { fileId, sourceId: payloadSourceId } = payload;
-  const sourceId = payloadSourceId || DRIVE_SOURCES[0].id;
-  const cacheKey = `${sourceId}:${fileId}`;
-
-  if (cacheIndex.has(cacheKey)) {
-    const info = cacheIndex.get(cacheKey);
-    res.setHeader('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent(info.name)}`);
-    res.setHeader('Content-Type', info.mimeType || 'application/octet-stream');
-    res.setHeader('Content-Length', info.size);
-    return res.sendFile(info.path);
-  }
-
-  // 缓存已失效 → 自动回退到直连 Drive
-  console.log(`[Cache] 缓存已失效，回退直链: ${fileId} (${sourceId})`);
-  try {
-    const drive = getDriveClient(sourceId);
-    const meta = await drive.files.get({ fileId, fields: 'name,mimeType,size' });
-    const { name: fileName, mimeType, size } = meta.data;
-    res.setHeader('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent(fileName)}`);
-    res.setHeader('Content-Type', mimeType || 'application/octet-stream');
-    if (size) res.setHeader('Content-Length', size);
-    const dlRes = await drive.files.get({ fileId, alt: 'media' }, { responseType: 'stream' });
-    dlRes.data.pipe(res);
-  } catch (err) {
-    console.error('[Cache] 回退直链失败:', err.message);
-    if (!res.headersSent) res.status(502).send('文件下载失败，请重新获取链接');
-  }
-});
-
-// Generate preview token
-// GET /api/preview/:fileId?sourceId=yyy
-app.get('/api/preview/:fileId', requireLogin, (req, res) => {
-  const { fileId } = req.params;
-  const sourceId = req.query.sourceId || DRIVE_SOURCES[0].id;
-  const token = Buffer.from(JSON.stringify({ id: fileId, sourceId })).toString('base64url');
-  const host = `${req.protocol}://${req.get('host')}`;
-  getDriveClient(sourceId).files.get({ fileId, fields: 'name,size' })
-    .then(({ data }) => {
-      res.json({ token, url: `${host}/pv2/${token}`, name: data.name, size: data.size || 0 });
-    })
-    .catch(() => {
-      res.json({ token, url: `${host}/pv2/${token}`, name: '', size: 0 });
-    });
-});
-
-// Public inline preview (legacy /pv/)
-app.get('/pv/:token', async (req, res) => {
-  let payload;
-  try {
-    payload = JSON.parse(Buffer.from(req.params.token, 'base64url').toString());
-  } catch {
-    return res.status(400).send('Invalid token');
-  }
-  const sourceId = payload.sourceId || DRIVE_SOURCES[0].id;
-  try {
-    const drive = getDriveClient(sourceId);
-    const meta = await drive.files.get({ fileId: payload.id, fields: 'name,mimeType,size' });
-    const { name, mimeType } = meta.data;
-    const disposition = mimeType.startsWith('text/')
-      || mimeType === 'application/json'
-      || mimeType.startsWith('image/')
-      || mimeType === 'application/pdf'
-      || mimeType.startsWith('video/')
-      || mimeType.startsWith('audio/')
-      ? 'inline' : 'attachment';
-    res.setHeader('Content-Disposition', `${disposition}; filename*=UTF-8''${encodeURIComponent(name)}`);
-    res.setHeader('Content-Type', mimeType || 'application/octet-stream');
-    const stream = await drive.files.get({ fileId: payload.id, alt: 'media' }, { responseType: 'stream' });
-    stream.data.pipe(res);
-  } catch (err) {
-    console.error('[Drive] 预览错误:', err.message);
-    res.status(500).send('Preview failed: ' + err.message);
-  }
-});
-
-// Binary preview data
-// GET /api/preview-data/:fileId?sourceId=yyy
+// Office / Google 文档预览数据（Google 原生格式自动导出为 Office 格式）
 app.get('/api/preview-data/:fileId', requireLogin, async (req, res) => {
-  const { fileId } = req.params;
-  const sourceId = req.query.sourceId || DRIVE_SOURCES[0].id;
+  const source = resolveSource(req.query.sourceId);
+  if (!source) return res.status(400).json({ error: '数据源不存在' });
+
   try {
-    const drive = getDriveClient(sourceId);
-    const meta = await drive.files.get({ fileId, fields: 'name,mimeType,size' });
-    const { name, mimeType } = meta.data;
-    const EXPORT_TYPES = {
-      'application/vnd.google-apps.document': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-      'application/vnd.google-apps.spreadsheet': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-      'application/vnd.google-apps.presentation': 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
-    };
-    const exportMime = EXPORT_TYPES[mimeType];
-    res.setHeader('Content-Disposition', `inline; filename*=UTF-8''${encodeURIComponent(name)}`);
-    res.setHeader('Content-Type', exportMime || mimeType);
-    const stream = exportMime
-      ? await drive.files.export({ fileId, mimeType: exportMime }, { responseType: 'stream' })
-      : await drive.files.get({ fileId, alt: 'media' }, { responseType: 'stream' });
-    stream.data.pipe(res);
+    await pipeDrive(req, res, { fileId: req.params.fileId, source, disposition: 'inline' });
   } catch (err) {
-    console.error('[Drive] preview-data error:', err.message);
-    res.status(500).json({ error: err.message });
+    sendDriveError(res, err);
   }
 });
 
-// Public download endpoint
+// ─── 公共访问（签名 token）───────────────────────────────────────────────────
+function resolvePublicRequest(req, res) {
+  const payload = verifyFileToken(req.params.token);
+  if (!payload) {
+    res.status(400).json({ error: '链接无效或已过期' });
+    return null;
+  }
+  const source = getSource(payload.sourceId);
+  if (!source) {
+    res.status(400).json({ error: '链接对应的数据源不存在' });
+    return null;
+  }
+  return { payload, source };
+}
+
+app.get('/pv2/:token', async (req, res) => {
+  const ctx = resolvePublicRequest(req, res);
+  if (!ctx) return;
+  try {
+    await pipeDrive(req, res, { fileId: ctx.payload.id, source: ctx.source, disposition: 'inline' });
+  } catch (err) {
+    sendDriveError(res, err);
+  }
+});
+
 app.get('/dl/:token', async (req, res) => {
-  let payload;
+  const ctx = resolvePublicRequest(req, res);
+  if (!ctx) return;
   try {
-    payload = JSON.parse(Buffer.from(req.params.token, 'base64url').toString());
-  } catch {
-    return res.status(400).send('Invalid link');
-  }
-  const sourceId = payload.sourceId || DRIVE_SOURCES[0].id;
-  try {
-    const drive = getDriveClient(sourceId);
-    const meta = await drive.files.get({ fileId: payload.id, fields: 'name,mimeType,size' });
-    const { name, mimeType } = meta.data;
-    res.setHeader('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent(name)}`);
-    res.setHeader('Content-Type', mimeType || 'application/octet-stream');
-    const stream = await drive.files.get({ fileId: payload.id, alt: 'media' }, { responseType: 'stream' });
-    stream.data.pipe(res);
+    await pipeDrive(req, res, { fileId: ctx.payload.id, source: ctx.source, disposition: 'attachment' });
   } catch (err) {
-    console.error('[Drive] 下载错误:', err.message);
-    res.status(500).send('Download failed: ' + err.message);
+    sendDriveError(res, err);
   }
 });
 
-// Fallback → SPA index
-app.get('*', (req, res) => {
-  res.sendFile(path.join(__dirname, 'public', 'index.html'));
+app.get('/cache/:token', async (req, res) => {
+  const ctx = resolvePublicRequest(req, res);
+  if (!ctx) return;
+
+  const info = cacheIndex.get(cacheKey(ctx.source.id, ctx.payload.id));
+  if (info && fs.existsSync(info.path)) {
+    res.setHeader('Content-Type', info.mimeType || 'application/octet-stream');
+    res.setHeader('Content-Disposition', contentDisposition('attachment', info.name));
+    res.setHeader('Cache-Control', 'private, max-age=0, must-revalidate');
+    return res.sendFile(info.path, (err) => {
+      if (!err) return;
+      console.error('[Cache] 发送本地文件失败:', err.message);
+      if (!res.headersSent) res.status(500).end();
+    });
+  }
+
+  console.log(`[Cache] 缓存已失效，回退直连: ${ctx.payload.id} (${ctx.source.id})`);
+  try {
+    await pipeDrive(req, res, { fileId: ctx.payload.id, source: ctx.source, disposition: 'attachment' });
+  } catch (err) {
+    sendDriveError(res, err);
+  }
 });
 
-// ─── Init & Start ─────────────────────────────────────────────────────────────
-loadCacheIndex();
-setInterval(cleanCache, 6 * 60 * 60 * 1000); // 每 6 小时清理一次
+// ─── 静态资源与兜底 ──────────────────────────────────────────────────────────
+app.use(express.static(path.join(BASE_PATH, 'public'), { index: false }));
 
-app.listen(PORT, () => {
-  console.log(`GDlists running on http://localhost:${PORT}`);
+app.get('*', (req, res) => {
+  if (req.path.startsWith('/api/')) return res.status(404).json({ error: '接口不存在' });
+  serveIndex(req, res);
+});
+
+// ─── 启动与退出 ──────────────────────────────────────────────────────────────
+loadCacheIndex();
+cleanCache();
+const cacheTimer = setInterval(cleanCache, CACHE_CLEAN_INTERVAL);
+
+const server = app.listen(PORT, () => {
+  console.log(`GDlists running on http://localhost:${PORT} (version ${APP_VERSION})`);
   console.log(`已配置 ${DRIVE_SOURCES.length} 个数据源: ${DRIVE_SOURCES.map(s => s.name).join(', ')}`);
+  console.log(`缓存目录: ${CACHE_DIR}（上限 ${(MAX_CACHE_SIZE / 1024 ** 3).toFixed(1)} GB，保留 ${Math.round(CACHE_TTL / 86400000)} 天）`);
+});
+
+function shutdown(signal) {
+  console.log(`[App] 收到 ${signal}，正在关闭…`);
+  clearInterval(cacheTimer);
+  saveCacheIndex();
+  server.close(() => process.exit(0));
+  setTimeout(() => process.exit(0), 10000).unref();
+}
+
+process.on('SIGTERM', () => shutdown('SIGTERM'));
+process.on('SIGINT', () => shutdown('SIGINT'));
+process.on('unhandledRejection', (reason) => {
+  console.error('[Fatal] 未处理的 Promise 拒绝:', reason);
+});
+process.on('uncaughtException', (err) => {
+  console.error('[Fatal] 未捕获异常:', err);
+  process.exit(1);
 });
