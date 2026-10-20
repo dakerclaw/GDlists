@@ -1,7 +1,5 @@
 # GDlists
 
-> GDlist 的多账号多文件夹版本
->
 > Google Drive 文件列表服务：登录保护 + 签名直链 + 在线预览 + 多账号多文件夹
 
 **特性**
@@ -79,22 +77,9 @@ http://你的服务器IP:端口
 | `MAX_CACHE_SIZE_GB` | `5` | 缓存容量上限，超出按最旧淘汰 |
 | `FILE_LIST_LIMIT` | `5000` | 单文件夹最多显示条数，防止超大目录拖垮浏览器 |
 
-生成密钥与密码哈希：
-
-```bash
-node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
-node -e "const b=require('bcryptjs');b.hash('你的密码',10).then(h=>console.log(h))"
-```
-
 ---
 
 ## 🗂️ 多账号 / 多文件夹
-
-在 `.env` 中用 JSON 数组配置，一行写完：
-
-```env
-DRIVE_SOURCES=[{"id":"work","name":"工作盘","keyFile":"/opt/gdlists/sa_1.json","folderId":"1AbcWorkFolderId"},{"id":"personal","name":"个人盘","keyFile":"/opt/gdlists/sa_2.json","folderId":"1XyzPersonalFolderId"}]
-```
 
 | 字段 | 说明 | 必填 |
 | --- | --- | --- |
@@ -156,7 +141,7 @@ curl -s localhost:3000/api/health  # 健康检查
 ```bash
 cd /opt/gdlists
 git fetch origin
-git reset --hard origin/main     # 或 origin/master
+git reset --hard origin/main
 npm ci --omit=dev                # 有 package-lock.json
 systemctl restart gdlists
 journalctl -u gdlists -n 20 --no-pager
@@ -201,35 +186,6 @@ gdlists/
 ```
 
 ---
-
-## 🧪 测试
-
-```bash
-npm install
-npm test          # lib 单元测试（无外部依赖）
-npm run test:smoke  # 启动服务并验证路由（不需要真实 Google 凭据）
-```
-
----
-
-## 🔌 API 一览
-
-| 方法 | 路径 | 说明 |
-| --- | --- | --- |
-| GET | `/api/health` | 健康检查（无需登录） |
-| POST | `/api/login` | 登录 |
-| POST | `/api/logout` | 退出 |
-| GET | `/api/auth` | 当前登录状态 |
-| GET | `/api/sources` | 数据源列表（仅 id/name） |
-| GET | `/api/files?folderId=&sourceId=` | 文件列表（含 `cached` 字段） |
-| GET | `/api/path?folderId=&sourceId=` | 面包屑路径 |
-| GET | `/api/link/:fileId` | 生成签名下载链接 |
-| POST | `/api/cache/:fileId` | 启动后台缓存任务 |
-| GET | `/api/cache-status/:fileId` | 缓存状态 / 进度 |
-| GET | `/api/preview/:fileId` | 预览信息与 token |
-| GET | `/pv2/:token` | 内联预览流（支持 Range） |
-| GET | `/dl/:token` | 下载流（支持 Range） |
-| GET | `/cache/:token` | 缓存文件下载（未命中回退直连） |
 
 ---
 
