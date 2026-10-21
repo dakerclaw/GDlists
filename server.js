@@ -16,7 +16,7 @@ const { createTokenCodec } = require('./lib/token');
 const { parseRange } = require('./lib/range');
 
 // ─── 基础配置 ────────────────────────────────────────────────────────────────
-const APP_VERSION = '20261020';
+const APP_VERSION = '20261021';
 const PORT = Number(process.env.PORT) || 3000;
 const BASE_PATH = path.join(__dirname);
 const INDEX_PATH = path.join(BASE_PATH, 'public', 'index.html');
@@ -158,6 +158,25 @@ function getDriveClient(source) {
 async function getMeta(drive, fileId, fields = 'name,mimeType,size') {
   const res = await drive.files.get({ fileId, fields, supportsAllDrives: true });
   return res.data;
+}
+
+/**
+ * 用 Drive 里文件夹的真实名称作为数据源显示名。
+ * 取不到（无权限/网络异常）时保留 DRIVE_SOURCES 里的配置值。
+ */
+async function refreshSourceNames() {
+  await Promise.all(DRIVE_SOURCES.map(async (source) => {
+    try {
+      const meta = await getMeta(getDriveClient(source), source.folderId, 'name');
+      const name = String(meta.name || '').trim();
+      if (name && name !== source.name) {
+        console.log(`[Sources] ${source.id} 显示名: "${source.name}" -> "${name}"`);
+        source.name = name;
+      }
+    } catch (e) {
+      console.warn(`[Sources] 读取 "${source.name}" 的文件夹名称失败，沿用配置值: ${e.message}`);
+    }
+  }));
 }
 
 // ─── Token / 会话 ────────────────────────────────────────────────────────────
@@ -865,17 +884,34 @@ loadCacheIndex();
 cleanCache();
 const cacheTimer = setInterval(cleanCache, CACHE_CLEAN_INTERVAL);
 
-const server = app.listen(PORT, () => {
-  console.log(`GDlists running on http://localhost:${PORT} (version ${APP_VERSION})`);
-  console.log(`已配置 ${DRIVE_SOURCES.length} 个数据源: ${DRIVE_SOURCES.map(s => s.name).join(', ')}`);
-  console.log(`缓存目录: ${CACHE_DIR}（上限 ${(MAX_CACHE_SIZE / 1024 ** 3).toFixed(1)} GB，保留 ${Math.round(CACHE_TTL / 86400000)} 天）`);
-});
+// 文件夹可能在 Drive 里被改名：每 6 小时重新同步一次数据源显示名
+const nameTimer = setInterval(() => {
+  refreshSourceNames().catch((e) => console.warn('[Sources] 同步文件夹名称失败:', e.message));
+}, 6 * 60 * 60 * 1000);
+nameTimer.unref();
+
+let server;
+
+(async () => {
+  // 启动时先读取真实文件夹名（最多等 8 秒；失败不影响启动，沿用配置名）
+  await Promise.race([
+    refreshSourceNames(),
+    new Promise((resolve) => setTimeout(resolve, 8000)),
+  ]).catch((e) => console.warn('[Sources] 同步文件夹名称失败:', e.message));
+
+  server = app.listen(PORT, () => {
+    console.log(`GDlists running on http://localhost:${PORT} (version ${APP_VERSION})`);
+    console.log(`已配置 ${DRIVE_SOURCES.length} 个数据源: ${DRIVE_SOURCES.map(s => s.name).join(', ')}`);
+    console.log(`缓存目录: ${CACHE_DIR}（上限 ${(MAX_CACHE_SIZE / 1024 ** 3).toFixed(1)} GB，保留 ${Math.round(CACHE_TTL / 86400000)} 天）`);
+  });
+})();
 
 function shutdown(signal) {
   console.log(`[App] 收到 ${signal}，正在关闭…`);
   clearInterval(cacheTimer);
+  clearInterval(nameTimer);
   saveCacheIndex();
-  server.close(() => process.exit(0));
+  if (server) server.close(() => process.exit(0));
   setTimeout(() => process.exit(0), 10000).unref();
 }
 

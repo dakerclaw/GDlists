@@ -20,9 +20,9 @@
 
 1. 打开 [Google Cloud Console](https://console.cloud.google.com/)，创建或选择项目
 2. **创建 Service Account**
-   - 左侧菜单 → **IAM 和管理** → **Service Accounts**
-   - 点击「+ 创建 Service Account」→ 填写名称 → 完成
-   - 进入详情 → 「密钥」→「添加密钥」→「创建新密钥」→「JSON」→ 下载文件
+   - 左侧菜单（或快速访问） → **IAM 和管理** → **Service Accounts服务账号**
+   - 点击「+ 创建 Service Account服务账号」→ 填写名称 → 完成
+   - 进入详情 → 「密钥」→「添加键」→「创建新密钥」→「JSON」→ 下载文件
 3. **共享 Drive 文件夹**
    - 打开要分享的 Google Drive 文件夹
    - 右键 → 「共享」→ 添加 Service Account 邮箱，权限选「查看者」
@@ -86,7 +86,7 @@ http://你的服务器IP:端口
 | 字段 | 说明 | 必填 |
 | --- | --- | --- |
 | `id` | 唯一标识，字母/数字/`_`/`-`，≤32 位，用于 API 路由 | 是 |
-| `name` | 标签页显示名称 | 是 |
+| `name` | 备用显示名称；启动时会自动替换成 Drive 里该文件夹的真实名称（取不到时用此值） | 是 |
 | `keyFile` | 该账号 Service Account JSON 的绝对路径 | 是 |
 | `folderId` | 该源的根文件夹 ID | 是 |
 
